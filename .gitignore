@@ -39,3 +39,7 @@ docs/_spelling/
 /skyrl-gym/dist
 
 *.log
+
+# Custom documentation READMEs (user's personal notes)
+_README.md
+**/_README.md
