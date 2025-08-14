@@ -4,8 +4,9 @@ import time
 import ray
 import torch
 from loguru import logger
-from omegaconf.dictconfig import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from ray.util.placement_group import placement_group, PlacementGroupSchedulingStrategy, PlacementGroup
+from skyrl_train.utils.ppo_utils import AdvantageEstimatorRegistry, PolicyLossRegistry, sync_registries
 
 
 class Timer:
@@ -21,7 +22,7 @@ class Timer:
     def __exit__(self, exc_type, exc_val, exc_tb):
         logger.opt(depth=1).info(f"Finished: '{self.message}', time cost: {time.time() - self.start_time:.2f}s")
         if self.update_dict is not None:
-            self.update_dict[self.message] = time.time() - self.start_time
+            self.update_dict[self.message] = self.update_dict.get(self.message, 0.0) + time.time() - self.start_time
 
     async def __aenter__(self):
         self.start_time = time.time()
@@ -31,7 +32,7 @@ class Timer:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         logger.opt(depth=1).info(f"Finished: '{self.message}', time cost: {time.time() - self.start_time:.2f}s")
         if self.update_dict is not None:
-            self.update_dict[self.message] = time.time() - self.start_time
+            self.update_dict[self.message] = self.update_dict.get(self.message, 0.0) + time.time() - self.start_time
 
 
 def validate_batch_sizes(cfg: DictConfig):
@@ -129,12 +130,10 @@ def validate_cfg(cfg: DictConfig):
             cfg.generator.remote_inference_engine_urls
         ), "num_inference_engines should be equal to the number of remote_inference_engine_urls"
 
-    if not cfg.generator.async_engine:
+    if not cfg.generator.async_engine and cfg.generator.backend == "vllm":
         assert (
             cfg.generator.batched
-        ), "if we are using the offline engine, we need to put generator in batched mode for faster generation"
-    if cfg.generator.backend == "sglang" and cfg.generator.run_engines_locally:
-        raise ValueError("SGLang backend currently does not support local engines")
+        ), "if we are using the offline vLLM engine, we need to put generator in batched mode for faster generation"
 
     assert (
         cfg.trainer.sequence_parallel_backend == "ulysses"
@@ -183,15 +182,36 @@ def validate_cfg(cfg: DictConfig):
             # for local engines or sglang, we disable
             cfg.generator.override_existing_update_group = "disable"
 
-    assert cfg.trainer.algorithm.ppo_loss_type in (
-        "regular",
-        "dual_clip",
-    ), f"invalid ppo_loss_type: {cfg.trainer.algorithm.ppo_loss_type}. Must be one of `['regular', 'dual_clip']`"
+    assert (
+        cfg.trainer.algorithm.policy_loss_type in PolicyLossRegistry.list_available()
+    ), f"invalid policy_loss_type: {cfg.trainer.algorithm.policy_loss_type}. Must be one of {PolicyLossRegistry.list_available()}"
+
+    assert (
+        cfg.trainer.algorithm.advantage_estimator in AdvantageEstimatorRegistry.list_available()
+    ), f"invalid advantage_estimator: {cfg.trainer.algorithm.advantage_estimator}. Must be one of {AdvantageEstimatorRegistry.list_available()}"
 
     assert cfg.trainer.algorithm.loss_reduction in (
         "token_mean",
         "sequence_mean",
-    ), f"invalid loss_reduction: {cfg.trainer.algorithm.loss_reduction}. Must be one of `['token_mean', 'sequence_mean']`"
+        "seq_mean_token_sum_norm",
+    ), f"invalid loss_reduction: {cfg.trainer.algorithm.loss_reduction}. Must be one of `['token_mean', 'sequence_mean', 'seq_mean_token_sum_norm']`"
+
+    # add field to algorithm config needed for loss functions
+    # create a new config to make it modifiable
+    algorithm_config = OmegaConf.create(cfg.trainer.algorithm)
+    # NOTE (erictang000): this is the max sequence length including the prompt, since max response length
+    # per batch can be variable based on the prompt length. This is used to normalize the loss for
+    # seq_mean_token_sum_norm loss reduction. Potentially revisit this if we update to use a
+    # fixed max response budget.
+    algorithm_config.max_seq_len = cfg.generator.max_input_length + cfg.generator.sampling_params.max_generate_length
+    cfg.trainer.algorithm = algorithm_config
+
+    # TODO: fix once we support these features with SGLang
+    if cfg.generator.backend == "sglang" and cfg.generator.run_engines_locally:
+        assert cfg.generator.inference_engine_tensor_parallel_size == 1, (
+            "As of now, We do not support tensor parallel inference engine with SGLang when running engines locally. "
+            "Please set `inference_engine_tensor_parallel_size` to 1."
+        )
 
     if cfg.trainer.strategy == "deepspeed" and not (
         cfg.trainer.policy.optimizer_config.offload_after_step
@@ -246,6 +266,13 @@ def get_physical_gpu_id():
 def initialize_ray(cfg: DictConfig):
     # TODO(sumanthrh): introduce a debug mode and add debugging flags like `CUDA_LAUNCH_BLOCKING` here
     env_vars = {}
+
+    # NOTE (charlie): See https://github.com/vllm-project/vllm/blob/c6b0a7d3ba03ca414be1174e9bd86a97191b7090/vllm/worker/worker_base.py#L445
+    # and https://docs.vllm.ai/en/v0.9.2/usage/troubleshooting.html?h=nccl_cumem_enable#known-issues
+    # Same for SGLang as we set `NCCL_CUMEM_ENABLE` to 0 in `sglang_engine.py`'s _patched_set_envs_and_config
+    if cfg.generator.weight_sync_backend == "nccl":
+        env_vars["NCCL_CUMEM_ENABLE"] = "0"
+
     if cfg.generator.backend == "vllm":
         # NOTE (sumanthrh): In vllm >= 0.9.0, we need to explicitly allow for serialization via pickle for collective RPCs.
         # During weight transfer, we use IPC handles, which contains a `function` object and requires pickling.
@@ -283,12 +310,23 @@ def initialize_ray(cfg: DictConfig):
         logger.info("Exporting wandb api key to ray runtime env")
         env_vars["WANDB_API_KEY"] = os.environ["WANDB_API_KEY"]
 
+    if os.environ.get("MLFLOW_TRACKING_URI"):
+        logger.info("Exporting mlflow tracking uri to ray runtime env")
+        env_vars["MLFLOW_TRACKING_URI"] = os.environ["MLFLOW_TRACKING_URI"]
+
+    if os.environ.get("MLFLOW_TRACKING_TOKEN"):
+        logger.info("Exporting mlflow tracking token to ray runtime env")
+        env_vars["MLFLOW_TRACKING_TOKEN"] = os.environ["MLFLOW_TRACKING_TOKEN"]
+
     if os.environ.get("SKYRL_LD_LIBRARY_PATH_EXPORT"):
         # export `LD_LIBRARY_PATH` to ray runtime env.
         # For some reason the `LD_LIBRARY_PATH` is not exported to the worker with .env file.
         logger.info(f"Exporting `LD_LIBRARY_PATH` to ray runtime env: {os.environ['LD_LIBRARY_PATH']}")
         env_vars["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
     ray.init(runtime_env={"env_vars": env_vars})
+
+    # create the named ray actors for the registries to make available to all workers
+    sync_registries()
 
 
 def get_ray_pg_ready_with_timeout(pg: PlacementGroup, timeout: int = 60):
