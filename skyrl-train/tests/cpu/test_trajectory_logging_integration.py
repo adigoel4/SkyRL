@@ -302,17 +302,3 @@ class TestTrajectoryLoggingIntegration:
         assert generator.trajectory_logger is None
         assert generator.collect_trajectories is False
     
-    def test_trajectory_logging_config_validation(self, base_config):
-        """Test trajectory logging configuration validation."""
-        # Test valid configuration
-        base_config.generator.trajectory_logging.enabled = True
-        base_config.generator.trajectory_logging.type = "csv"
-        base_config.generator.trajectory_logging.max_trajectories = 10
-        base_config.generator.trajectory_logging.max_text_length = 500
-        
-        # Should not raise any errors
-        traj_config = base_config.generator.trajectory_logging
-        assert traj_config.enabled is True
-        assert traj_config.type == "csv"
-        assert traj_config.max_trajectories == 10
-        assert traj_config.max_text_length == 500

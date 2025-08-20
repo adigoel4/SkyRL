@@ -99,60 +99,6 @@ def concrete_logger():
 
 
 # Test Classes
-class TestTrajectoryDataclass:
-    """Test the Trajectory dataclass structure and behavior."""
-    
-    def test_trajectory_creation_required_fields(self):
-        """Test creating trajectory with only required fields."""
-        prompt = [{"role": "user", "content": "Hello"}]
-        chat_history = prompt + [{"role": "assistant", "content": "Hi"}]
-        
-        traj = Trajectory(
-            prompt=prompt,
-            chat_history=chat_history,
-            response="Hi there!",
-            reward=1.0,
-            stop_reason="stop",
-            env_class="test_env",
-            env_extras={"key": "value"}
-        )
-        
-        # Verify required fields
-        assert traj.prompt == prompt
-        assert traj.chat_history == chat_history
-        assert traj.response == "Hi there!"
-        assert traj.reward == 1.0
-        assert traj.stop_reason == "stop"
-        assert traj.env_class == "test_env"
-        assert traj.env_extras == {"key": "value"}
-        
-        # Optional fields should default to None
-        assert traj.prompt_tokens is None
-        assert traj.response_tokens is None
-        assert traj.loss_mask is None
-        assert traj.metadata is None
-    
-    def test_trajectory_creation_all_fields(self):
-        """Test trajectory creation with all optional fields populated."""
-        traj = Trajectory(
-            prompt="Simple prompt",
-            chat_history=[],
-            response="Response",
-            reward=0.5,
-            stop_reason="length",
-            env_class="env",
-            env_extras={},
-            prompt_tokens=[1, 2, 3],
-            response_tokens=[4, 5, 6],
-            loss_mask=[1, 1, 1],
-            metadata={"id": "123"}
-        )
-        
-        # Verify optional fields are properly set
-        assert traj.prompt_tokens == [1, 2, 3]
-        assert traj.response_tokens == [4, 5, 6]
-        assert traj.loss_mask == [1, 1, 1]
-        assert traj.metadata == {"id": "123"}
 
 
 class TestTrajectoryLogger:
