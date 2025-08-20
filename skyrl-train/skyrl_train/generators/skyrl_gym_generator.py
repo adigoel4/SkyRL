@@ -13,6 +13,7 @@ from skyrl_train.inference_engines.base import InferenceEngineInput, Conversatio
 from omegaconf import DictConfig
 from skyrl_gym.envs.base_text_env import BaseTextEnvStepOutput
 from skyrl_train.generators.utils import get_custom_chat_template, get_generation_prompt_ids, apply_overlong_filtering
+from skyrl_train.utils.trajectory_logger import TrajectoryLogger, Trajectory, WandbTableTrajectoryLogger
 
 
 class SkyRLGymGenerator(GeneratorInterface):
@@ -48,6 +49,35 @@ class SkyRLGymGenerator(GeneratorInterface):
             )
         else:
             self.env_executor = None
+        
+        # Initialize trajectory logging components
+        self.trajectory_logger = None
+        self.collect_trajectories = False
+        self.trajectory_batch = []
+        
+        if hasattr(generator_cfg, 'trajectory_logging') and generator_cfg.trajectory_logging.enabled:
+            self._init_trajectory_logger(generator_cfg.trajectory_logging)
+    
+    def _init_trajectory_logger(self, logging_cfg: DictConfig):
+        """Initialize the trajectory logger based on configuration."""
+        logger_type = logging_cfg.get('type', 'wandb')
+        
+        if logger_type == 'wandb':
+            self.trajectory_logger = WandbTableTrajectoryLogger(
+                tokenizer=self.tokenizer,
+                max_trajectories=logging_cfg.get('max_trajectories', 10),
+                max_text_length=logging_cfg.get('max_text_length', 2000),
+                log_full_history=logging_cfg.get('log_full_history', False)
+            )
+        elif logger_type == 'csv':
+            # CSV logger will be set externally in integration tests
+            # This allows for custom output_dir configuration
+            self.trajectory_logger = None
+        else:
+            raise ValueError(f"Unknown trajectory logger type: {logger_type}")
+        
+        # Enable trajectory collection
+        self.collect_trajectories = True
 
         if getattr(self.generator_cfg.sampling_params, "logprobs", None) is not None and not self.generator_cfg.batched:
             raise ValueError("`sampling_params.logprobs` should be `None` if `batched` is `False`")
@@ -60,7 +90,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         max_tokens: int,
         max_input_length: int,
         sampling_params: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[List[int], float, str, List[int], List[int], Optional[List[float]]]:
+    ) -> Tuple[List[int], float, str, List[int], List[int], Optional[List[float]], Optional[Trajectory]]:
         """
         Multi-turn generation loop that executes a single trajectory.
 
@@ -77,6 +107,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             loss_mask: List[int]
             prompt_token_ids: List[int]
             rollout_logprobs: Optional[List[float]]
+            trajectory: Optional[Trajectory]
         """
         # Create a new environment instance
         env_extras["max_turns"] = self.max_turns  # TODO(shu): move this to config
@@ -175,8 +206,28 @@ class SkyRLGymGenerator(GeneratorInterface):
             stop_reason = "length"
         response_ids = response_ids[:max_response_tokens]
         loss_mask = loss_mask[:max_response_tokens]
+        
+        # Create trajectory object if logging is enabled
+        trajectory = None
+        if self.trajectory_logger and self.collect_trajectories:
+            # Decode response for logging
+            response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+            
+            trajectory = Trajectory(
+                prompt=prompt,
+                chat_history=chat_history,
+                response=response_text,
+                reward=reward,
+                stop_reason=stop_reason,
+                env_class=env_class,
+                env_extras=env_extras,
+                prompt_tokens=prompt_ids,
+                response_tokens=response_ids,
+                loss_mask=loss_mask,
+                metadata={'trajectory_id': trajectory_id if 'trajectory_id' in locals() else None}
+            )
 
-        return response_ids, reward, stop_reason, loss_mask, prompt_ids, rollout_logprobs
+        return response_ids, reward, stop_reason, loss_mask, prompt_ids, rollout_logprobs, trajectory
 
     async def generate_batched(
         self,
@@ -312,6 +363,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         loss_masks = [output[3] for output in all_outputs]
         prompt_token_ids = [output[4] for output in all_outputs]
 
+        # Handle logprobs (upstream feature)
         if sampling_params is not None:
             # sampling params will be a dict in the format of the inference engine backend
             # TODO: this might have to change when we support logprobs for sglang
@@ -323,6 +375,12 @@ class SkyRLGymGenerator(GeneratorInterface):
             rollout_logprobs = [output[5] for output in all_outputs]
         else:
             rollout_logprobs = None
+        
+        # Collect trajectories if logging is enabled (trajectory logging feature)
+        if self.trajectory_logger and self.collect_trajectories:
+            trajectories = [output[6] for output in all_outputs if len(output) > 6 and output[6] is not None]
+            if trajectories:
+                self.trajectory_batch.extend(trajectories)
 
         rollout_metrics = self._rollout_metrics(responses, rewards)
 
@@ -344,6 +402,22 @@ class SkyRLGymGenerator(GeneratorInterface):
         }
 
         return generator_output
+    
+    def get_collected_trajectories(self) -> List[Trajectory]:
+        """Get the list of collected trajectories."""
+        return self.trajectory_batch.copy()
+        
+    def log_trajectories(self, step: int, prefix: str = "train"):
+        """Log collected trajectories if logger is enabled.
+        
+        Args:
+            step: Current training step
+            prefix: Prefix for logging (e.g., "train", "eval")
+        """
+        if self.trajectory_logger and self.trajectory_batch:
+            self.trajectory_logger.log(self.trajectory_batch, step, prefix)
+            # Clear the batch after logging
+            self.trajectory_batch = []
 
     def _rollout_metrics(self, responses: List[List[int]], rewards: List[float]):
         num_tokens_arr = np.array([len(response) for response in responses])
