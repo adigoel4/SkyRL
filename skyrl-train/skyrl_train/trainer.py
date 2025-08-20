@@ -162,8 +162,8 @@ class RayPPOTrainer:
             
             # Log eval trajectories if enabled (log each batch during eval)
             if (self.cfg.generator.get('trajectory_logging', {}).get('enabled', False) and 
-                hasattr(self.generator, 'log_trajectories')):
-                self.generator.log_trajectories(self.global_step, prefix="eval")
+                hasattr(self.generator, '_flush_trajectories')):
+                self.generator._flush_trajectories(self.global_step, prefix="eval")
             concat_all_envs.extend(generator_input["env_classes"])
             concat_env_extras.extend(generator_input["env_extras"])
             concat_uids.extend(uids)
@@ -298,10 +298,10 @@ class RayPPOTrainer:
                     
                     # Log trajectories if enabled in config
                     if (self.cfg.generator.get('trajectory_logging', {}).get('enabled', False) and 
-                        hasattr(self.generator, 'log_trajectories')):
+                        hasattr(self.generator, '_flush_trajectories')):
                         log_interval = self.cfg.generator.trajectory_logging.get('log_interval', 100)
                         if log_interval == 0 or self.global_step % log_interval == 0:
-                            self.generator.log_trajectories(self.global_step, prefix="train")
+                            self.generator._flush_trajectories(self.global_step, prefix="train")
 
                     # 2. print example just for debugging
                     vis = self.tokenizer.decode(generator_output["response_ids"][0])

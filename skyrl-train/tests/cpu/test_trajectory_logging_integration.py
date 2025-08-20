@@ -207,35 +207,36 @@ class TestTrajectoryLoggingIntegration:
             # Execute generation
             generator_output = await generator.generate(input_batch)
             
-            # Verify trajectory collection through internal state
-            assert len(generator.trajectory_batch) == 2
+            # Verify trajectory collection by attempting to log (behavioral verification)
+            # If trajectories were collected, this should create a CSV file
+            generator._flush_trajectories(step=100, prefix="integration_test")
             
-            for trajectory in generator.trajectory_batch:
-                assert isinstance(trajectory, Trajectory)
-                assert isinstance(trajectory.prompt, list)
-                assert isinstance(trajectory.chat_history, list)
-                assert isinstance(trajectory.response, str)
-                assert trajectory.reward == 1.0
-                assert trajectory.env_class == "test_env"
-                assert "topic" in trajectory.env_extras
-            
-            # Test logging
-            generator.log_trajectories(step=100, prefix="integration_test")
-            
-            # Verify CSV file creation
+            # Verify CSV file creation and content (behavioral verification)
             csv_file = os.path.join(tmpdir, "integration_test_trajectories_step_100.csv")
             assert os.path.exists(csv_file)
             
-            # Verify CSV content
+            # Verify CSV content contains expected trajectory data
             import pandas as pd
             df = pd.read_csv(csv_file)
+            
+            # Should have 2 trajectories from the input batch
             assert len(df) == 2
+            
+            # Verify structure and metadata
             assert "prompt" in df.columns
             assert "response" in df.columns
             assert "reward" in df.columns
             assert "step" in df.columns
+            assert "env_class" in df.columns
             assert all(df["step"] == 100)
             assert all(df["prefix"] == "integration_test")
+            assert all(df["env_class"] == "test_env")
+            assert all(df["reward"] == 1.0)
+            
+            # Verify trajectory content without accessing internal state
+            prompts = df["prompt"].tolist()
+            assert any("machine learning" in prompt.lower() for prompt in prompts)
+            assert any("neural networks" in prompt.lower() for prompt in prompts)
     
     def test_trainer_trajectory_logging_integration(self, trajectory_logging_config, mock_tokenizer):
         """Test that RayPPOTrainer integrates with trajectory logging configuration."""

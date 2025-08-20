@@ -352,7 +352,6 @@ class SkyRLGymGenerator(GeneratorInterface):
         loss_masks = [output[3] for output in all_outputs]
         prompt_token_ids = [output[4] for output in all_outputs]
 
-        # Handle logprobs (upstream feature)
         if sampling_params is not None:
             # sampling params will be a dict in the format of the inference engine backend
             # TODO: this might have to change when we support logprobs for sglang
@@ -365,11 +364,8 @@ class SkyRLGymGenerator(GeneratorInterface):
         else:
             rollout_logprobs = None
         
-        # Collect trajectories if logging is enabled (trajectory logging feature)
-        if self.trajectory_logger and self.collect_trajectories:
-            trajectories = [output[6] for output in all_outputs if len(output) > 6 and output[6] is not None]
-            if trajectories:
-                self.trajectory_batch.extend(trajectories)
+        # Collect trajectories if logging is enabled
+        self._collect_trajectories(all_outputs)
 
         rollout_metrics = self._rollout_metrics(responses, rewards)
 
@@ -392,17 +388,6 @@ class SkyRLGymGenerator(GeneratorInterface):
 
         return generator_output
     
-    def log_trajectories(self, step: int, prefix: str = "train"):
-        """Log collected trajectories if logger is enabled.
-        
-        Args:
-            step: Current training step
-            prefix: Prefix for logging (e.g., "train", "eval")
-        """
-        if self.trajectory_logger and self.trajectory_batch:
-            self.trajectory_logger.log(self.trajectory_batch, step, prefix)
-            # Clear the batch after logging
-            self.trajectory_batch = []
 
     def _rollout_metrics(self, responses: List[List[int]], rewards: List[float]):
         num_tokens_arr = np.array([len(response) for response in responses])
@@ -608,3 +593,29 @@ class SkyRLGymGenerator(GeneratorInterface):
                 input_ids += obs_tokens
 
         return loss_mask, input_ids, logprobs
+
+    def _collect_trajectories(self, all_outputs) -> None:
+        """
+        Extract trajectory collection logic from generation.
+        
+        Args:
+            all_outputs: List of outputs from agent_loop calls
+        """
+        if not (self.trajectory_logger and self.collect_trajectories):
+            return
+            
+        trajectories = [output[6] for output in all_outputs if len(output) > 6 and output[6] is not None]
+        if trajectories:
+            self.trajectory_batch.extend(trajectories)
+
+    def _flush_trajectories(self, step: int, prefix: str) -> None:
+        """
+        Extract trajectory flushing logic.
+        
+        Args:
+            step: Current training step
+            prefix: Prefix for logging (e.g., "train", "eval")
+        """
+        if self.trajectory_logger and self.trajectory_batch:
+            self.trajectory_logger.log(self.trajectory_batch, step, prefix)
+            self.trajectory_batch.clear()
