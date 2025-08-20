@@ -5,7 +5,6 @@ This module tests the TrajectoryLogger system including:
 - Base TrajectoryLogger abstract class utilities
 - WandbTableTrajectoryLogger with proper mocking
 - CSVTrajectoryLogger file operations
-- CompositeTrajectoryLogger delegation
 - Trajectory dataclass functionality
 
 Run with: uv run --extra dev --isolated pytest tests/cpu/utils/test_trajectory_logger.py
@@ -22,7 +21,6 @@ import pytest
 from skyrl_train.inference_engines.base import ConversationType
 from skyrl_train.utils.trajectory_logger import (
     CSVTrajectoryLogger,
-    CompositeTrajectoryLogger,
     Trajectory,
     TrajectoryLogger,
     WandbTableTrajectoryLogger,
@@ -356,29 +354,6 @@ class TestCSVTrajectoryLogger:
             # Verify logger state tracking
             assert logger.logged_count == 2
 
-
-class TestCompositeTrajectoryLogger:
-    """Test composite logger that delegates to multiple loggers."""
-    
-    def test_delegates_to_multiple_loggers(self, sample_trajectories):
-        """Test that composite logger calls all constituent loggers with same parameters."""
-        # Create mock loggers
-        logger1 = MagicMock(spec=TrajectoryLogger)
-        logger2 = MagicMock(spec=TrajectoryLogger)
-        
-        # Create composite logger
-        composite_logger = CompositeTrajectoryLogger([logger1, logger2])
-        composite_logger.log(sample_trajectories, step=100, prefix="test")
-        
-        # Verify both loggers were called with identical arguments
-        logger1.log.assert_called_once_with(sample_trajectories, 100, "test")
-        logger2.log.assert_called_once_with(sample_trajectories, 100, "test")
-    
-    def test_empty_logger_list(self):
-        """Test composite logger behavior with no constituent loggers."""
-        composite_logger = CompositeTrajectoryLogger([])
-        # Should not raise exception even with empty logger list
-        composite_logger.log([], step=0, prefix="test")
 
 
 class TestTrajectoryLoggerFactory:

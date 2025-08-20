@@ -315,38 +315,6 @@ class CSVTrajectoryLogger(TrajectoryLogger):
         self.logged_count += len(trajectories)
 
 
-class CompositeTrajectoryLogger(TrajectoryLogger):
-    """
-    Composite logger that delegates to multiple trajectory loggers.
-    """
-    
-    def __init__(self, loggers: List[TrajectoryLogger]):
-        """
-        Initialize the composite trajectory logger.
-        
-        Args:
-            loggers: List of TrajectoryLogger instances to delegate to
-        """
-        super().__init__()
-        self.loggers = loggers
-    
-    def log(
-        self,
-        trajectories: List[Trajectory],
-        step: int,
-        prefix: str = "train"
-    ) -> None:
-        """
-        Log trajectories using all configured loggers.
-        
-        Args:
-            trajectories: List of Trajectory objects to log
-            step: Current training step
-            prefix: Prefix for logging (e.g., "train", "eval")
-        """
-        for logger in self.loggers:
-            logger.log(trajectories, step, prefix)
-
 
 def create_trajectory_logger_from_config(
     logging_cfg: DictConfig,
