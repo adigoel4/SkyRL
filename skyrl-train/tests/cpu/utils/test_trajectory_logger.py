@@ -26,6 +26,7 @@ from skyrl_train.utils.trajectory_logger import (
     Trajectory,
     TrajectoryLogger,
     WandbTableTrajectoryLogger,
+    create_trajectory_logger_from_config,
 )
 
 
@@ -378,3 +379,72 @@ class TestCompositeTrajectoryLogger:
         composite_logger = CompositeTrajectoryLogger([])
         # Should not raise exception even with empty logger list
         composite_logger.log([], step=0, prefix="test")
+
+
+class TestTrajectoryLoggerFactory:
+    """Test the create_trajectory_logger_from_config factory function."""
+    
+    def test_create_wandb_logger_from_config(self, mock_tokenizer):
+        """Test creating WandB logger from configuration."""
+        from omegaconf import DictConfig
+        
+        config = DictConfig({
+            "enabled": True,
+            "type": "wandb",
+            "max_trajectories": 5,
+            "max_text_length": 1000,
+            "log_full_history": True
+        })
+        
+        with patch.dict('sys.modules', {'wandb': MagicMock()}):
+            logger = create_trajectory_logger_from_config(config, mock_tokenizer)
+            
+            assert isinstance(logger, WandbTableTrajectoryLogger)
+            assert logger.tokenizer == mock_tokenizer
+            assert logger.max_trajectories == 5
+            assert logger.max_text_length == 1000
+            assert logger.log_full_history is True
+    
+    def test_create_csv_logger_from_config(self, mock_tokenizer):
+        """Test creating CSV logger from configuration."""
+        from omegaconf import DictConfig
+        import tempfile
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = DictConfig({
+                "enabled": True,
+                "type": "csv",
+                "output_dir": tmpdir,
+                "max_trajectories": 20
+            })
+            
+            logger = create_trajectory_logger_from_config(config, mock_tokenizer)
+            
+            assert isinstance(logger, CSVTrajectoryLogger)
+            assert logger.tokenizer == mock_tokenizer
+            assert logger.output_dir == tmpdir
+            assert logger.max_trajectories == 20
+    
+    def test_disabled_config_returns_none(self, mock_tokenizer):
+        """Test that disabled configuration returns None."""
+        from omegaconf import DictConfig
+        
+        config = DictConfig({
+            "enabled": False,
+            "type": "wandb"
+        })
+        
+        logger = create_trajectory_logger_from_config(config, mock_tokenizer)
+        assert logger is None
+    
+    def test_unknown_logger_type_raises_error(self, mock_tokenizer):
+        """Test that unknown logger type raises ValueError."""
+        from omegaconf import DictConfig
+        
+        config = DictConfig({
+            "enabled": True,
+            "type": "unknown_type"
+        })
+        
+        with pytest.raises(ValueError, match="Unknown trajectory logger type"):
+            create_trajectory_logger_from_config(config, mock_tokenizer)

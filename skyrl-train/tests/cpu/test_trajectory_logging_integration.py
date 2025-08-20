@@ -22,7 +22,7 @@ from skyrl_train.entrypoints.main_base import config_dir
 from skyrl_train.generators.base import GeneratorInput
 from skyrl_train.generators.skyrl_gym_generator import SkyRLGymGenerator
 from skyrl_train.trainer import RayPPOTrainer
-from skyrl_train.utils.trajectory_logger import CSVTrajectoryLogger, Trajectory
+from skyrl_train.utils.trajectory_logger import CSVTrajectoryLogger, Trajectory, create_trajectory_logger_from_config
 from skyrl_gym.envs.base_text_env import BaseTextEnvStepOutput
 
 
@@ -52,6 +52,7 @@ def trajectory_logging_config(base_config) -> DictConfig:
     base_config.generator.trajectory_logging.max_trajectories = 5
     base_config.generator.trajectory_logging.max_text_length = 200
     base_config.generator.trajectory_logging.log_interval = 1
+    base_config.generator.trajectory_logging.output_dir = "./test_trajectory_logs"
     return base_config
 
 
@@ -155,14 +156,10 @@ class TestTrajectoryLoggingIntegration:
         mock_make.return_value = mock_env
         
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create CSV logger
-            csv_logger = CSVTrajectoryLogger(
-                output_dir=tmpdir,
-                tokenizer=mock_tokenizer,
-                max_trajectories=trajectory_logging_config.generator.trajectory_logging.max_trajectories
-            )
+            # Update config with test directory
+            trajectory_logging_config.generator.trajectory_logging.output_dir = tmpdir
             
-            # Create generator with trajectory logging
+            # Create generator with trajectory logging from config
             generator = SkyRLGymGenerator(
                 generator_cfg=trajectory_logging_config.generator,
                 skyrl_gym_cfg=mock_env_cfg,
@@ -171,13 +168,9 @@ class TestTrajectoryLoggingIntegration:
                 model_name="test_model",
             )
             
-            # Set trajectory logger after creation
-            generator.trajectory_logger = csv_logger
-            
-            # Test trajectory collection
-            collected_trajectories = generator.get_collected_trajectories()
-            assert isinstance(collected_trajectories, list)
-            assert len(collected_trajectories) == 0  # Should be empty initially
+            # Verify trajectory logger was created
+            assert generator.trajectory_logger is not None
+            assert generator.collect_trajectories is True
     
     @pytest.mark.asyncio
     @patch("skyrl_gym.make")
@@ -189,14 +182,10 @@ class TestTrajectoryLoggingIntegration:
         mock_make.return_value = mock_env
         
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create CSV logger
-            csv_logger = CSVTrajectoryLogger(
-                output_dir=tmpdir,
-                tokenizer=mock_tokenizer,
-                max_trajectories=trajectory_logging_config.generator.trajectory_logging.max_trajectories
-            )
+            # Update config with test directory
+            trajectory_logging_config.generator.trajectory_logging.output_dir = tmpdir
             
-            # Create generator
+            # Create generator with dependency injection
             generator = SkyRLGymGenerator(
                 generator_cfg=trajectory_logging_config.generator,
                 skyrl_gym_cfg=mock_env_cfg,
@@ -204,9 +193,6 @@ class TestTrajectoryLoggingIntegration:
                 tokenizer=mock_tokenizer,
                 model_name="test_model",
             )
-            
-            # Set trajectory logger after creation
-            generator.trajectory_logger = csv_logger
             
             # Generate trajectories
             input_batch: GeneratorInput = {
@@ -220,12 +206,11 @@ class TestTrajectoryLoggingIntegration:
             
             # Execute generation
             generator_output = await generator.generate(input_batch)
-            collected_trajectories = generator.get_collected_trajectories()
             
-            # Verify trajectory collection
-            assert len(collected_trajectories) == 2
+            # Verify trajectory collection through internal state
+            assert len(generator.trajectory_batch) == 2
             
-            for trajectory in collected_trajectories:
+            for trajectory in generator.trajectory_batch:
                 assert isinstance(trajectory, Trajectory)
                 assert isinstance(trajectory.prompt, list)
                 assert isinstance(trajectory.chat_history, list)
@@ -234,8 +219,8 @@ class TestTrajectoryLoggingIntegration:
                 assert trajectory.env_class == "test_env"
                 assert "topic" in trajectory.env_extras
             
-            # Test logging to CSV
-            csv_logger.log(collected_trajectories, step=100, prefix="integration_test")
+            # Test logging
+            generator.log_trajectories(step=100, prefix="integration_test")
             
             # Verify CSV file creation
             csv_file = os.path.join(tmpdir, "integration_test_trajectories_step_100.csv")
@@ -267,7 +252,7 @@ class TestTrajectoryLoggingIntegration:
         
         # Create mock generator
         mock_generator = MagicMock()
-        mock_generator.get_collected_trajectories.return_value = []
+        mock_generator.trajectory_batch = []
         
         # Create trainer
         trainer = RayPPOTrainer(
@@ -313,8 +298,8 @@ class TestTrajectoryLoggingIntegration:
         generator.trajectory_logger = None
         
         # Verify no trajectory collection
-        collected_trajectories = generator.get_collected_trajectories()
-        assert len(collected_trajectories) == 0
+        assert generator.trajectory_logger is None
+        assert generator.collect_trajectories is False
     
     def test_trajectory_logging_config_validation(self, base_config):
         """Test trajectory logging configuration validation."""

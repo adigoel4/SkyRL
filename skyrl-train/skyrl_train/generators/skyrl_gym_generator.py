@@ -13,7 +13,7 @@ from skyrl_train.inference_engines.base import InferenceEngineInput, Conversatio
 from omegaconf import DictConfig
 from skyrl_gym.envs.base_text_env import BaseTextEnvStepOutput
 from skyrl_train.generators.utils import get_custom_chat_template, get_generation_prompt_ids, apply_overlong_filtering
-from skyrl_train.utils.trajectory_logger import TrajectoryLogger, Trajectory, WandbTableTrajectoryLogger
+from skyrl_train.utils.trajectory_logger import TrajectoryLogger, Trajectory, create_trajectory_logger_from_config
 
 
 class SkyRLGymGenerator(GeneratorInterface):
@@ -24,6 +24,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         inference_engine_client: InferenceEngineClient,
         tokenizer,
         model_name: str,
+        trajectory_logger: Optional[TrajectoryLogger] = None,
     ):
         """
         Args:
@@ -51,33 +52,21 @@ class SkyRLGymGenerator(GeneratorInterface):
             self.env_executor = None
         
         # Initialize trajectory logging components
-        self.trajectory_logger = None
-        self.collect_trajectories = False
         self.trajectory_batch = []
         
-        if hasattr(generator_cfg, 'trajectory_logging') and generator_cfg.trajectory_logging.enabled:
-            self._init_trajectory_logger(generator_cfg.trajectory_logging)
-    
-    def _init_trajectory_logger(self, logging_cfg: DictConfig):
-        """Initialize the trajectory logger based on configuration."""
-        logger_type = logging_cfg.get('type', 'wandb')
-        
-        if logger_type == 'wandb':
-            self.trajectory_logger = WandbTableTrajectoryLogger(
-                tokenizer=self.tokenizer,
-                max_trajectories=logging_cfg.get('max_trajectories', 10),
-                max_text_length=logging_cfg.get('max_text_length', 2000),
-                log_full_history=logging_cfg.get('log_full_history', False)
+        # Use injected logger or create from config
+        if trajectory_logger:
+            self.trajectory_logger = trajectory_logger
+            self.collect_trajectories = True
+        elif hasattr(generator_cfg, 'trajectory_logging'):
+            self.trajectory_logger = create_trajectory_logger_from_config(
+                generator_cfg.trajectory_logging, tokenizer
             )
-        elif logger_type == 'csv':
-            # CSV logger will be set externally in integration tests
-            # This allows for custom output_dir configuration
-            self.trajectory_logger = None
+            self.collect_trajectories = self.trajectory_logger is not None
         else:
-            raise ValueError(f"Unknown trajectory logger type: {logger_type}")
-        
-        # Enable trajectory collection
-        self.collect_trajectories = True
+            self.trajectory_logger = None
+            self.collect_trajectories = False
+    
 
         if getattr(self.generator_cfg.sampling_params, "logprobs", None) is not None and not self.generator_cfg.batched:
             raise ValueError("`sampling_params.logprobs` should be `None` if `batched` is `False`")
@@ -403,10 +392,6 @@ class SkyRLGymGenerator(GeneratorInterface):
 
         return generator_output
     
-    def get_collected_trajectories(self) -> List[Trajectory]:
-        """Get the list of collected trajectories."""
-        return self.trajectory_batch.copy()
-        
     def log_trajectories(self, step: int, prefix: str = "train"):
         """Log collected trajectories if logger is enabled.
         

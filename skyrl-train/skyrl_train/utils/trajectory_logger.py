@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass
 import pandas as pd
+from omegaconf import DictConfig
 from skyrl_train.inference_engines.base import ConversationType, MessageType
 
 
@@ -345,3 +346,40 @@ class CompositeTrajectoryLogger(TrajectoryLogger):
         """
         for logger in self.loggers:
             logger.log(trajectories, step, prefix)
+
+
+def create_trajectory_logger_from_config(
+    logging_cfg: DictConfig,
+    tokenizer
+) -> Optional[TrajectoryLogger]:
+    """
+    Create trajectory logger from configuration following repo factory pattern.
+    
+    Args:
+        logging_cfg: Trajectory logging configuration
+        tokenizer: Tokenizer for text processing
+        
+    Returns:
+        TrajectoryLogger instance or None if disabled
+    """
+    if not logging_cfg.get('enabled', False):
+        return None
+        
+    logger_type = logging_cfg.get('type', 'wandb')
+    
+    if logger_type == 'wandb':
+        return WandbTableTrajectoryLogger(
+            tokenizer=tokenizer,
+            max_trajectories=logging_cfg.get('max_trajectories', 10),
+            max_text_length=logging_cfg.get('max_text_length', 2000),
+            log_full_history=logging_cfg.get('log_full_history', False)
+        )
+    elif logger_type == 'csv':
+        output_dir = logging_cfg.get('output_dir', './trajectory_logs')
+        return CSVTrajectoryLogger(
+            output_dir=output_dir,
+            tokenizer=tokenizer,
+            max_trajectories=logging_cfg.get('max_trajectories', None)
+        )
+    else:
+        raise ValueError(f"Unknown trajectory logger type: {logger_type}")
