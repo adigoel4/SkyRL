@@ -5,6 +5,7 @@ This module provides a flexible framework for logging complete trajectories
 including model outputs and environment observations/feedback.
 """
 
+import os
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass
@@ -158,7 +159,7 @@ class TrajectoryLogger(ABC):
                 "stop_reason": traj.stop_reason,
                 "env_class": traj.env_class,
                 "chat_turns": len(traj.chat_history),
-                "response_length": len(traj.response_tokens) if traj.response_tokens else len(traj.response),
+                "response_length": len(traj.response_tokens) if traj.response_tokens else len(self.tokenizer.encode(traj.response, add_special_tokens=False)) if self.tokenizer else len(traj.response),
             })
         
         return pd.DataFrame(data)
@@ -240,8 +241,8 @@ class WandbTableTrajectoryLogger(TrajectoryLogger):
             prompt_str = self._truncate_text(prompt_str, self.max_text_length)
             response_str = self._truncate_text(response_str, self.max_text_length)
             
-            # Calculate response length
-            response_length = len(traj.response_tokens) if traj.response_tokens else len(response_str)
+            # Calculate response length (always use token count for consistency)
+            response_length = len(traj.response_tokens) if traj.response_tokens else len(self.tokenizer.encode(traj.response, add_special_tokens=False)) if self.tokenizer else len(traj.response)
             
             if self.log_full_history:
                 # Format full conversation
@@ -280,8 +281,6 @@ class CSVTrajectoryLogger(TrajectoryLogger):
         """
         super().__init__(tokenizer, max_trajectories)
         self.output_dir = output_dir
-        
-        import os
         os.makedirs(output_dir, exist_ok=True)
     
     def log(
@@ -308,7 +307,6 @@ class CSVTrajectoryLogger(TrajectoryLogger):
         df["prefix"] = prefix
         
         # Save to CSV
-        import os
         filename = os.path.join(self.output_dir, f"{prefix}_trajectories_step_{step}.csv")
         df.to_csv(filename, index=False)
         

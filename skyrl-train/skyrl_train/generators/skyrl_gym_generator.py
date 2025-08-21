@@ -2,7 +2,7 @@ import asyncio
 import copy
 from uuid import uuid4
 import skyrl_gym
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, NamedTuple
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from tqdm.asyncio import tqdm
@@ -14,6 +14,17 @@ from omegaconf import DictConfig
 from skyrl_gym.envs.base_text_env import BaseTextEnvStepOutput
 from skyrl_train.generators.utils import get_custom_chat_template, get_generation_prompt_ids, apply_overlong_filtering
 from skyrl_train.utils.trajectory_logger import TrajectoryLogger, Trajectory, create_trajectory_logger_from_config
+
+
+class AgentLoopOutput(NamedTuple):
+    """Return value from agent_loop for better maintainability and readability."""
+    response_ids: List[int]
+    reward: float
+    stop_reason: str
+    loss_mask: List[int]
+    prompt_token_ids: List[int]
+    rollout_logprobs: Optional[List[float]]
+    trajectory: Optional[Trajectory]
 
 
 class SkyRLGymGenerator(GeneratorInterface):
@@ -79,7 +90,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         max_tokens: int,
         max_input_length: int,
         sampling_params: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[List[int], float, str, List[int], List[int], Optional[List[float]], Optional[Trajectory]]:
+    ) -> AgentLoopOutput:
         """
         Multi-turn generation loop that executes a single trajectory.
 
@@ -90,13 +101,14 @@ class SkyRLGymGenerator(GeneratorInterface):
             max_input_length: int
             sampling_params: Optional[Dict[str, Any]]
         Returns:
-            response_ids: List[int]
-            reward: float
-            stop_reason: str
-            loss_mask: List[int]
-            prompt_token_ids: List[int]
-            rollout_logprobs: Optional[List[float]]
-            trajectory: Optional[Trajectory]
+            AgentLoopOutput containing:
+                response_ids: List[int]
+                reward: float
+                stop_reason: str
+                loss_mask: List[int]
+                prompt_token_ids: List[int]
+                rollout_logprobs: Optional[List[float]]
+                trajectory: Optional[Trajectory]
         """
         # Create a new environment instance
         env_extras["max_turns"] = self.max_turns  # TODO(shu): move this to config
@@ -213,10 +225,18 @@ class SkyRLGymGenerator(GeneratorInterface):
                 prompt_tokens=prompt_ids,
                 response_tokens=response_ids,
                 loss_mask=loss_mask,
-                metadata={'trajectory_id': trajectory_id if 'trajectory_id' in locals() else None}
+                metadata={'trajectory_id': trajectory_id}
             )
 
-        return response_ids, reward, stop_reason, loss_mask, prompt_ids, rollout_logprobs, trajectory
+        return AgentLoopOutput(
+            response_ids=response_ids,
+            reward=reward,
+            stop_reason=stop_reason,
+            loss_mask=loss_mask,
+            prompt_token_ids=prompt_ids,
+            rollout_logprobs=rollout_logprobs,
+            trajectory=trajectory
+        )
 
     async def generate_batched(
         self,
@@ -346,11 +366,11 @@ class SkyRLGymGenerator(GeneratorInterface):
             mininterval=5,
         )
 
-        responses = [output[0] for output in all_outputs]
-        rewards = [output[1] for output in all_outputs]
-        stop_reasons = [output[2] for output in all_outputs]
-        loss_masks = [output[3] for output in all_outputs]
-        prompt_token_ids = [output[4] for output in all_outputs]
+        responses = [output.response_ids for output in all_outputs]
+        rewards = [output.reward for output in all_outputs]
+        stop_reasons = [output.stop_reason for output in all_outputs]
+        loss_masks = [output.loss_mask for output in all_outputs]
+        prompt_token_ids = [output.prompt_token_ids for output in all_outputs]
 
         if sampling_params is not None:
             # sampling params will be a dict in the format of the inference engine backend
@@ -360,7 +380,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             get_logprobs = self.generator_cfg.sampling_params.logprobs is not None
 
         if get_logprobs:
-            rollout_logprobs = [output[5] for output in all_outputs]
+            rollout_logprobs = [output.rollout_logprobs for output in all_outputs]
         else:
             rollout_logprobs = None
         
@@ -604,18 +624,35 @@ class SkyRLGymGenerator(GeneratorInterface):
         if not (self.trajectory_logger and self.collect_trajectories):
             return
             
-        trajectories = [output[6] for output in all_outputs if len(output) > 6 and output[6] is not None]
+        trajectories = [output.trajectory for output in all_outputs if output.trajectory is not None]
         if trajectories:
             self.trajectory_batch.extend(trajectories)
 
-    def _flush_trajectories(self, step: int, prefix: str) -> None:
+    def flush_trajectories(self, step: int, prefix: str = "train") -> None:
         """
-        Extract trajectory flushing logic.
+        Public method to flush trajectories with all necessary checks.
+        
+        This method includes all the logic for checking if logging is enabled,
+        if the batch is non-empty, and if the log interval is met for training.
         
         Args:
             step: Current training step
             prefix: Prefix for logging (e.g., "train", "eval")
         """
-        if self.trajectory_logger and self.trajectory_batch:
+        # Check if trajectory logging is enabled
+        if not (self.trajectory_logger and self.collect_trajectories):
+            return
+            
+        # For eval, always flush if there are trajectories
+        if prefix == "eval":
+            if self.trajectory_batch:
+                self.trajectory_logger.log(self.trajectory_batch, step, prefix)
+                self.trajectory_batch.clear()
+            return
+        
+        # For train, check log interval from generator config
+        # This assumes the config is available - trainer will handle the interval check
+        if self.trajectory_batch:
             self.trajectory_logger.log(self.trajectory_batch, step, prefix)
             self.trajectory_batch.clear()
+

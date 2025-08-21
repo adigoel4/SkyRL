@@ -15,6 +15,7 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import hydra
+import pandas as pd
 import pytest
 from omegaconf import DictConfig
 
@@ -209,14 +210,13 @@ class TestTrajectoryLoggingIntegration:
             
             # Verify trajectory collection by attempting to log (behavioral verification)
             # If trajectories were collected, this should create a CSV file
-            generator._flush_trajectories(step=100, prefix="integration_test")
+            generator.flush_trajectories(step=100, prefix="integration_test")
             
             # Verify CSV file creation and content (behavioral verification)
             csv_file = os.path.join(tmpdir, "integration_test_trajectories_step_100.csv")
             assert os.path.exists(csv_file)
             
             # Verify CSV content contains expected trajectory data
-            import pandas as pd
             df = pd.read_csv(csv_file)
             
             # Should have 2 trajectories from the input batch

@@ -15,6 +15,7 @@ import tempfile
 from typing import List
 from unittest.mock import MagicMock, patch
 
+from omegaconf import DictConfig
 import pandas as pd
 import pytest
 
@@ -307,7 +308,6 @@ class TestTrajectoryLoggerFactory:
     
     def test_create_wandb_logger_from_config(self, mock_tokenizer):
         """Test creating WandB logger from configuration."""
-        from omegaconf import DictConfig
         
         config = DictConfig({
             "enabled": True,
@@ -328,8 +328,6 @@ class TestTrajectoryLoggerFactory:
     
     def test_create_csv_logger_from_config(self, mock_tokenizer):
         """Test creating CSV logger from configuration."""
-        from omegaconf import DictConfig
-        import tempfile
         
         with tempfile.TemporaryDirectory() as tmpdir:
             config = DictConfig({
@@ -348,7 +346,6 @@ class TestTrajectoryLoggerFactory:
     
     def test_disabled_config_returns_none(self, mock_tokenizer):
         """Test that disabled configuration returns None."""
-        from omegaconf import DictConfig
         
         config = DictConfig({
             "enabled": False,
@@ -360,7 +357,6 @@ class TestTrajectoryLoggerFactory:
     
     def test_unknown_logger_type_raises_error(self, mock_tokenizer):
         """Test that unknown logger type raises ValueError."""
-        from omegaconf import DictConfig
         
         config = DictConfig({
             "enabled": True,
