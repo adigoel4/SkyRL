@@ -7,19 +7,19 @@ import os
 
 def get_logger(name: str):
     """Get a simple logger for the given module name."""
-    logger = logging.getLogger(f"skyrl_gym.{name}")
-    
-    if not logger.handlers:
-        # Get log level from environment or default to INFO
+    # Configure the library's root logger once.
+    # All loggers in the library will propagate to this logger.
+    lib_logger = logging.getLogger("skyrl_gym")
+    if not lib_logger.handlers:
         level = os.environ.get("SKYRL_LOG_LEVEL", "INFO").upper()
-        
-        # Create console handler
         handler = logging.StreamHandler(sys.stderr)
         formatter = logging.Formatter(
             '%(asctime)s | %(levelname)-8s | %(name)s | %(message)s'
         )
         handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(getattr(logging, level, logging.INFO))
+        lib_logger.addHandler(handler)
+        lib_logger.setLevel(getattr(logging, level, logging.INFO))
+        # Prevent double logging if the root logger is also configured.
+        lib_logger.propagate = False
     
-    return logger
+    return logging.getLogger(f"skyrl_gym.{name}")
