@@ -56,10 +56,9 @@ def execute_sql_single(db_file, sql):
         execution_res = frozenset(cursor.fetchall())
         conn.rollback()
         conn.close()
-        # logger.debug('Successfully executed SQL', sql=sql[:100], db_file=db_file)
         return db_file, sql, execution_res, 1
     except Exception as e:
-        # logger.debug(f"Error executing SQL: {e}, db file: {db_file}", sql=sql[:100])
+        logger.debug(f"Error executing SQL: {e}, db file: {db_file}", sql=sql[:100])
         conn.rollback()
         conn.close()
         return db_file, sql, None, 0
@@ -74,7 +73,7 @@ def execute_sql_wrapper_single(db_file, sql, timeout, output_str):
         logger.warning(f"SQL timeout after {timeout}s: {sql[:100]}... (db: {db_file})")
         res = (db_file, sql, None, 0)
     except Exception as e:
-        # logger.debug(f"Error executing SQL: {e}, db_file: {db_file}", sql=sql[:100])
+        logger.debug(f"Error executing SQL: {e}, db_file: {db_file}", sql=sql[:100])
         res = (db_file, sql, None, 0)
 
     # Append the output to the tuple

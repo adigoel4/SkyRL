@@ -636,7 +636,6 @@ def lcb_check_correctness(sample, generation, timeout=6, debug=False):
             logger.warning("Global test execution timeout")
     if not result:
         return False
-    # logger.debug(f"Result: {result[0]}, metadata: {metadata_list}")
     # Check if all elements in result[0] are True
     return all(x is True for x in result[0])
 
