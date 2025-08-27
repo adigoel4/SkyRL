@@ -20,7 +20,7 @@ import pandas as pd
 import pytest
 
 from skyrl_train.inference_engines.base import ConversationType
-from skyrl_train.utils.trajectory_logger import (
+from skyrl_train.generators.trajectory_logger import (
     CSVTrajectoryLogger,
     Trajectory,
     TrajectoryLogger,
@@ -30,16 +30,6 @@ from skyrl_train.utils.trajectory_logger import (
 
 
 # Test Fixtures
-@pytest.fixture
-def mock_tokenizer():
-    """Create a mock tokenizer with standard decode/encode behavior."""
-    tokenizer = MagicMock()
-    tokenizer.decode.return_value = "decoded text"
-    tokenizer.encode.return_value = [1, 2, 3, 4]
-    tokenizer.eos_token_id = 4
-    return tokenizer
-
-
 @pytest.fixture
 def sample_trajectory() -> Trajectory:
     """Create a single sample trajectory for testing."""
@@ -60,8 +50,6 @@ def sample_trajectory() -> Trajectory:
         stop_reason="stop",
         env_class="gsm8k",
         env_extras={"difficulty": "easy", "index": 0},
-        prompt_tokens=[1, 2, 3, 4, 5],
-        response_tokens=[10, 11, 12, 13, 14, 15],
         loss_mask=[1, 1, 1, 1, 1, 1],
         metadata={"trajectory_id": "test_0"}
     )
@@ -80,8 +68,6 @@ def sample_trajectories(sample_trajectory) -> List[Trajectory]:
             stop_reason="stop" if i < 2 else "length",
             env_class="gsm8k",
             env_extras={"difficulty": "easy", "index": i},
-            prompt_tokens=[1, 2, 3, 4, 5],
-            response_tokens=[10, 11, 12, 13, 14, 15],
             loss_mask=[1, 1, 1, 1, 1, 1],
             metadata={"trajectory_id": f"test_{i}"}
         )
@@ -116,33 +102,6 @@ class TestTrajectoryLogger:
         assert "[user]: Hello" in formatted
         assert "[assistant]: Hi there!" in formatted
     
-    def test_truncate_text_no_truncation(self, concrete_logger):
-        """Test text truncation when text is within limits."""
-        short_text = "Hello world"
-        result = concrete_logger._truncate_text(short_text, 20)
-        assert result == short_text
-    
-    def test_truncate_text_with_truncation(self, concrete_logger):
-        """Test text truncation when text exceeds limits."""
-        long_text = "a" * 100
-        truncated = concrete_logger._truncate_text(long_text, 10)
-        assert len(truncated) == 10
-        assert truncated.endswith("...")
-    
-    def test_detokenize_with_tokenizer(self, concrete_logger, mock_tokenizer):
-        """Test detokenization using provided tokenizer."""
-        logger = type(concrete_logger)(tokenizer=mock_tokenizer)
-        result = logger._detokenize([1, 2, 3])
-        
-        assert result == "decoded text"
-        mock_tokenizer.decode.assert_called_once_with([1, 2, 3], skip_special_tokens=True)
-    
-    def test_detokenize_without_tokenizer(self, concrete_logger):
-        """Test detokenization fallback when no tokenizer provided."""
-        logger = type(concrete_logger)(tokenizer=None)
-        result = logger._detokenize([1, 2, 3])
-        assert result == "<3 tokens>"
-    
     def test_to_dataframe_conversion(self, concrete_logger, sample_trajectories):
         """Test conversion of trajectories to pandas DataFrame."""
         df = concrete_logger.to_dataframe(sample_trajectories)
@@ -152,7 +111,7 @@ class TestTrajectoryLogger:
         assert len(df) == len(sample_trajectories)
         
         # Check required columns exist
-        expected_columns = {"prompt", "response", "reward", "stop_reason", "env_class", "chat_turns", "response_length"}
+        expected_columns = {"prompt", "response", "reward", "stop_reason", "env_class", "chat_turns"}
         assert expected_columns.issubset(set(df.columns))
         
         # Validate specific data values
@@ -164,32 +123,22 @@ class TestTrajectoryLogger:
 class TestWandbTableTrajectoryLogger:
     """Test WandB table trajectory logger with proper API mocking."""
     
-    def test_initialization_success(self, mock_tokenizer):
+    def test_initialization_success(self):
         """Test successful WandB logger initialization with all parameters."""
         mock_wandb_module = MagicMock()
         
         with patch.dict('sys.modules', {'wandb': mock_wandb_module}):
             logger = WandbTableTrajectoryLogger(
-                tokenizer=mock_tokenizer,
                 max_trajectories=5,
-                max_text_length=100,
-                log_full_history=True
+                log_full_history=False
             )
             
             # Verify initialization parameters
-            assert logger.tokenizer == mock_tokenizer
             assert logger.max_trajectories == 5
-            assert logger.max_text_length == 100
-            assert logger.log_full_history is True
+            assert logger.log_full_history is False
             assert logger.wandb == mock_wandb_module
     
-    def test_initialization_fails_without_wandb(self, mock_tokenizer):
-        """Test that initialization fails gracefully when wandb is unavailable."""
-        with patch.dict('sys.modules', {'wandb': None}):
-            with pytest.raises(ImportError, match="wandb is required"):
-                WandbTableTrajectoryLogger(tokenizer=mock_tokenizer)
-    
-    def test_log_prompt_response_mode(self, sample_trajectories, mock_tokenizer):
+    def test_log_prompt_response_mode(self, sample_trajectories):
         """Test logging in prompt/response mode with trajectory limit verification."""
         mock_wandb_module = MagicMock()
         mock_table = MagicMock()
@@ -197,7 +146,6 @@ class TestWandbTableTrajectoryLogger:
         
         with patch.dict('sys.modules', {'wandb': mock_wandb_module}):
             logger = WandbTableTrajectoryLogger(
-                tokenizer=mock_tokenizer,
                 max_trajectories=2,  # Limit to first 2 trajectories
                 log_full_history=False
             )
@@ -226,7 +174,7 @@ class TestWandbTableTrajectoryLogger:
             assert "test/trajectories" in log_data
             assert log_kwargs["step"] == 100
     
-    def test_log_full_history_mode(self, sample_trajectories, mock_tokenizer):
+    def test_log_full_history_mode(self, sample_trajectories):
         """Test logging in full conversation history mode."""
         mock_wandb_module = MagicMock()
         mock_table = MagicMock()
@@ -234,7 +182,6 @@ class TestWandbTableTrajectoryLogger:
         
         with patch.dict('sys.modules', {'wandb': mock_wandb_module}):
             logger = WandbTableTrajectoryLogger(
-                tokenizer=mock_tokenizer,
                 log_full_history=True
             )
             
@@ -257,27 +204,24 @@ class TestWandbTableTrajectoryLogger:
 class TestCSVTrajectoryLogger:
     """Test CSV file trajectory logger functionality."""
     
-    def test_initialization(self, mock_tokenizer):
+    def test_initialization(self):
         """Test CSV logger initialization and directory creation."""
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = CSVTrajectoryLogger(
                 output_dir=tmpdir,
-                tokenizer=mock_tokenizer,
                 max_trajectories=5
             )
             
             # Verify initialization parameters
             assert logger.output_dir == tmpdir
-            assert logger.tokenizer == mock_tokenizer
             assert logger.max_trajectories == 5
             assert os.path.exists(tmpdir)
     
-    def test_log_trajectories_to_csv(self, sample_trajectories, mock_tokenizer):
+    def test_log_trajectories_to_csv(self, sample_trajectories):
         """Test logging trajectories to CSV file with proper content validation."""
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = CSVTrajectoryLogger(
                 output_dir=tmpdir,
-                tokenizer=mock_tokenizer,
                 max_trajectories=2
             )
             
@@ -302,31 +246,27 @@ class TestCSVTrajectoryLogger:
             assert logger.logged_count == 2
 
 
-
 class TestTrajectoryLoggerFactory:
     """Test the create_trajectory_logger_from_config factory function."""
     
-    def test_create_wandb_logger_from_config(self, mock_tokenizer):
+    def test_create_wandb_logger_from_config(self):
         """Test creating WandB logger from configuration."""
         
         config = DictConfig({
             "enabled": True,
             "type": "wandb",
             "max_trajectories": 5,
-            "max_text_length": 1000,
-            "log_full_history": True
+            "log_full_history": False
         })
         
         with patch.dict('sys.modules', {'wandb': MagicMock()}):
-            logger = create_trajectory_logger_from_config(config, mock_tokenizer)
+            logger = create_trajectory_logger_from_config(config)
             
             assert isinstance(logger, WandbTableTrajectoryLogger)
-            assert logger.tokenizer == mock_tokenizer
             assert logger.max_trajectories == 5
-            assert logger.max_text_length == 1000
-            assert logger.log_full_history is True
+            assert logger.log_full_history is False
     
-    def test_create_csv_logger_from_config(self, mock_tokenizer):
+    def test_create_csv_logger_from_config(self):
         """Test creating CSV logger from configuration."""
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -337,14 +277,13 @@ class TestTrajectoryLoggerFactory:
                 "max_trajectories": 20
             })
             
-            logger = create_trajectory_logger_from_config(config, mock_tokenizer)
+            logger = create_trajectory_logger_from_config(config)
             
             assert isinstance(logger, CSVTrajectoryLogger)
-            assert logger.tokenizer == mock_tokenizer
             assert logger.output_dir == tmpdir
             assert logger.max_trajectories == 20
     
-    def test_disabled_config_returns_none(self, mock_tokenizer):
+    def test_disabled_config_returns_none(self):
         """Test that disabled configuration returns None."""
         
         config = DictConfig({
@@ -352,10 +291,10 @@ class TestTrajectoryLoggerFactory:
             "type": "wandb"
         })
         
-        logger = create_trajectory_logger_from_config(config, mock_tokenizer)
+        logger = create_trajectory_logger_from_config(config)
         assert logger is None
     
-    def test_unknown_logger_type_raises_error(self, mock_tokenizer):
+    def test_unknown_logger_type_raises_error(self):
         """Test that unknown logger type raises ValueError."""
         
         config = DictConfig({
@@ -364,4 +303,4 @@ class TestTrajectoryLoggerFactory:
         })
         
         with pytest.raises(ValueError, match="Unknown trajectory logger type"):
-            create_trajectory_logger_from_config(config, mock_tokenizer)
+            create_trajectory_logger_from_config(config)

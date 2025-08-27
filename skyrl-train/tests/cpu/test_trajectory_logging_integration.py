@@ -23,7 +23,7 @@ from skyrl_train.entrypoints.main_base import config_dir
 from skyrl_train.generators.base import GeneratorInput
 from skyrl_train.generators.skyrl_gym_generator import SkyRLGymGenerator
 from skyrl_train.trainer import RayPPOTrainer
-from skyrl_train.utils.trajectory_logger import CSVTrajectoryLogger, Trajectory, create_trajectory_logger_from_config
+from skyrl_train.generators.trajectory_logger import create_trajectory_logger_from_config
 from skyrl_gym.envs.base_text_env import BaseTextEnvStepOutput
 
 
@@ -51,7 +51,6 @@ def trajectory_logging_config(base_config) -> DictConfig:
     base_config.generator.trajectory_logging.enabled = True
     base_config.generator.trajectory_logging.type = "csv"
     base_config.generator.trajectory_logging.max_trajectories = 5
-    base_config.generator.trajectory_logging.max_text_length = 200
     base_config.generator.trajectory_logging.log_interval = 1
     base_config.generator.trajectory_logging.output_dir = "./test_trajectory_logs"
     return base_config
@@ -145,7 +144,6 @@ class TestTrajectoryLoggingIntegration:
         assert cfg.generator.trajectory_logging.enabled is True
         assert cfg.generator.trajectory_logging.type == "csv"
         assert cfg.generator.trajectory_logging.max_trajectories == 5
-        assert cfg.generator.trajectory_logging.max_text_length == 200
         assert cfg.generator.trajectory_logging.log_interval == 1
     
     @patch("skyrl_gym.make")
@@ -205,16 +203,14 @@ class TestTrajectoryLoggingIntegration:
                 "env_classes": ["test_env", "test_env"],
             }
             
-            # Execute generation
+            # Execute generation - this should automatically trigger trajectory logging
+            # since log_interval=1 in our test config
             generator_output = await generator.generate(input_batch)
             
-            # Verify trajectory collection by attempting to log (behavioral verification)
-            # If trajectories were collected, this should create a CSV file
-            generator.flush_trajectories(step=100, prefix="integration_test")
-            
-            # Verify CSV file creation and content (behavioral verification)
-            csv_file = os.path.join(tmpdir, "integration_test_trajectories_step_100.csv")
-            assert os.path.exists(csv_file)
+            # Verify trajectory logging worked by checking for CSV file
+            # The _handle_trajectory_logging method should have created the file automatically
+            csv_file = os.path.join(tmpdir, "generation_trajectories_step_1.csv")
+            assert os.path.exists(csv_file), f"Expected trajectory file not found at {csv_file}"
             
             # Verify CSV content contains expected trajectory data
             df = pd.read_csv(csv_file)
@@ -224,16 +220,16 @@ class TestTrajectoryLoggingIntegration:
             
             # Verify structure and metadata
             assert "prompt" in df.columns
-            assert "response" in df.columns
+            assert "response" in df.columns 
             assert "reward" in df.columns
             assert "step" in df.columns
             assert "env_class" in df.columns
-            assert all(df["step"] == 100)
-            assert all(df["prefix"] == "integration_test")
+            assert all(df["step"] == 1)  # batch_count starts at 1
+            assert all(df["prefix"] == "generation")  # hardcoded in _handle_trajectory_logging
             assert all(df["env_class"] == "test_env")
             assert all(df["reward"] == 1.0)
             
-            # Verify trajectory content without accessing internal state
+            # Verify trajectory content
             prompts = df["prompt"].tolist()
             assert any("machine learning" in prompt.lower() for prompt in prompts)
             assert any("neural networks" in prompt.lower() for prompt in prompts)
@@ -295,10 +291,6 @@ class TestTrajectoryLoggingIntegration:
             model_name="test_model",
         )
         
-        # Ensure no trajectory logger is set (disabled case)
-        generator.trajectory_logger = None
-        
         # Verify no trajectory collection
         assert generator.trajectory_logger is None
         assert generator.collect_trajectories is False
-    

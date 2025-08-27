@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass
 import pandas as pd
 from omegaconf import DictConfig
-from skyrl_train.inference_engines.base import ConversationType, MessageType
+from skyrl_train.inference_engines.base import ConversationType
 
 
 @dataclass
@@ -22,13 +22,11 @@ class Trajectory:
     Attributes:
         prompt: Original prompt (can be ConversationType or string)
         chat_history: Complete conversation history
-        response: Final generated response
+        response: Final generated response text
         reward: Reward signal from environment
         stop_reason: Reason for trajectory termination
         env_class: Environment class used
         env_extras: Additional environment metadata
-        prompt_tokens: Tokenized prompt (optional)
-        response_tokens: Tokenized response (optional)
         loss_mask: Loss mask for training (optional)
         metadata: Additional metadata (optional)
     """
@@ -39,8 +37,6 @@ class Trajectory:
     stop_reason: str
     env_class: str
     env_extras: Dict[str, Any]
-    prompt_tokens: Optional[List[int]] = None
-    response_tokens: Optional[List[int]] = None
     loss_mask: Optional[List[int]] = None
     metadata: Optional[Dict[str, Any]] = None
 
@@ -53,15 +49,13 @@ class TrajectoryLogger(ABC):
     data in their specific format (e.g., wandb tables, CSV files, etc.)
     """
     
-    def __init__(self, tokenizer=None, max_trajectories: Optional[int] = None):
+    def __init__(self, max_trajectories: int = -1):
         """
         Initialize the trajectory logger.
         
         Args:
-            tokenizer: Optional tokenizer for converting between tokens and text
-            max_trajectories: Maximum number of trajectories to log per batch
+            max_trajectories: Maximum number of trajectories to log per batch (-1 for unlimited)
         """
-        self.tokenizer = tokenizer
         self.max_trajectories = max_trajectories
         self.logged_count = 0
     
@@ -99,35 +93,6 @@ class TrajectoryLogger(ABC):
             formatted.append(f"[{role}]: {content}")
         return "\n".join(formatted)
     
-    def _truncate_text(self, text: str, max_length: int = 1000) -> str:
-        """
-        Truncate text to a maximum length with ellipsis.
-        
-        Args:
-            text: Text to truncate
-            max_length: Maximum length
-            
-        Returns:
-            Truncated text
-        """
-        if len(text) <= max_length:
-            return text
-        return text[:max_length - 3] + "..."
-    
-    def _detokenize(self, token_ids: List[int]) -> str:
-        """
-        Convert token IDs to text using the tokenizer.
-        
-        Args:
-            token_ids: List of token IDs
-            
-        Returns:
-            Decoded text string
-        """
-        if self.tokenizer is None:
-            return f"<{len(token_ids)} tokens>"
-        return self.tokenizer.decode(token_ids, skip_special_tokens=True)
-    
     def to_dataframe(self, trajectories: List[Trajectory]) -> pd.DataFrame:
         """
         Convert trajectories to a pandas DataFrame for analysis.
@@ -146,20 +111,13 @@ class TrajectoryLogger(ABC):
             else:
                 prompt_str = str(traj.prompt)
             
-            # Detokenize if needed
-            if traj.response_tokens and self.tokenizer:
-                response_str = self._detokenize(traj.response_tokens)
-            else:
-                response_str = traj.response
-            
             data.append({
                 "prompt": prompt_str,
-                "response": response_str,
+                "response": traj.response,
                 "reward": traj.reward,
                 "stop_reason": traj.stop_reason,
                 "env_class": traj.env_class,
                 "chat_turns": len(traj.chat_history),
-                "response_length": len(traj.response_tokens) if traj.response_tokens else len(self.tokenizer.encode(traj.response, add_special_tokens=False)) if self.tokenizer else len(traj.response),
             })
         
         return pd.DataFrame(data)
@@ -172,29 +130,21 @@ class WandbTableTrajectoryLogger(TrajectoryLogger):
     
     def __init__(
         self, 
-        tokenizer=None, 
-        max_trajectories: Optional[int] = 10,
-        max_text_length: int = 2000,
-        log_full_history: bool = False
+        max_trajectories: int = -1,
+        log_full_history: bool = True
     ):
         """
         Initialize the WandB table trajectory logger.
         
         Args:
-            tokenizer: Optional tokenizer for converting between tokens and text
-            max_trajectories: Maximum number of trajectories to log per batch
-            max_text_length: Maximum length of text fields in the table
+            max_trajectories: Maximum number of trajectories to log per batch (-1 for unlimited)
             log_full_history: Whether to log full chat history or just prompt/response
         """
-        super().__init__(tokenizer, max_trajectories)
-        self.max_text_length = max_text_length
+        super().__init__(max_trajectories)
         self.log_full_history = log_full_history
         
-        try:
-            import wandb
-            self.wandb = wandb
-        except ImportError:
-            raise ImportError("wandb is required for WandbTableTrajectoryLogger. Install with: pip install wandb")
+        import wandb
+        self.wandb = wandb
     
     def log(
         self, 
@@ -211,14 +161,14 @@ class WandbTableTrajectoryLogger(TrajectoryLogger):
             prefix: Prefix for logging (e.g., "train", "eval")
         """
         # Limit number of trajectories if specified
-        if self.max_trajectories and len(trajectories) > self.max_trajectories:
+        if self.max_trajectories > 0 and len(trajectories) > self.max_trajectories:
             trajectories = trajectories[:self.max_trajectories]
         
         # Define columns based on logging configuration
         if self.log_full_history:
-            columns = ["step", "env_class", "full_conversation", "reward", "stop_reason", "response_length"]
+            columns = ["step", "env_class", "full_conversation", "reward", "stop_reason"]
         else:
-            columns = ["step", "env_class", "prompt", "response", "reward", "stop_reason", "response_length"]
+            columns = ["step", "env_class", "prompt", "response", "reward", "stop_reason"]
         
         # Create table
         table = self.wandb.Table(columns=columns)
@@ -231,27 +181,13 @@ class WandbTableTrajectoryLogger(TrajectoryLogger):
             else:
                 prompt_str = str(traj.prompt)
             
-            # Detokenize response if needed
-            if traj.response_tokens and self.tokenizer:
-                response_str = self._detokenize(traj.response_tokens)
-            else:
-                response_str = traj.response
-            
-            # Truncate texts
-            prompt_str = self._truncate_text(prompt_str, self.max_text_length)
-            response_str = self._truncate_text(response_str, self.max_text_length)
-            
-            # Calculate response length (always use token count for consistency)
-            response_length = len(traj.response_tokens) if traj.response_tokens else len(self.tokenizer.encode(traj.response, add_special_tokens=False)) if self.tokenizer else len(traj.response)
-            
             if self.log_full_history:
                 # Format full conversation
                 full_conv = self._format_conversation(traj.chat_history)
-                full_conv = self._truncate_text(full_conv, self.max_text_length * 2)
-                row_data = [step, traj.env_class, full_conv, traj.reward, traj.stop_reason, response_length]
+                row_data = [step, traj.env_class, full_conv, traj.reward, traj.stop_reason]
             else:
-                row_data = [step, traj.env_class, prompt_str, response_str, traj.reward, 
-                           traj.stop_reason, response_length]
+                row_data = [step, traj.env_class, prompt_str, traj.response, traj.reward, 
+                           traj.stop_reason]
             
             table.add_data(*row_data)
         
@@ -268,18 +204,16 @@ class CSVTrajectoryLogger(TrajectoryLogger):
     def __init__(
         self,
         output_dir: str,
-        tokenizer=None,
-        max_trajectories: Optional[int] = None
+        max_trajectories: int = -1
     ):
         """
         Initialize the CSV trajectory logger.
         
         Args:
             output_dir: Directory to save CSV files
-            tokenizer: Optional tokenizer for converting between tokens and text
-            max_trajectories: Maximum number of trajectories to log per batch
+            max_trajectories: Maximum number of trajectories to log per batch (-1 for unlimited)
         """
-        super().__init__(tokenizer, max_trajectories)
+        super().__init__(max_trajectories)
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
     
@@ -298,7 +232,7 @@ class CSVTrajectoryLogger(TrajectoryLogger):
             prefix: Prefix for logging (e.g., "train", "eval")
         """
         # Limit number of trajectories if specified
-        if self.max_trajectories and len(trajectories) > self.max_trajectories:
+        if self.max_trajectories > 0 and len(trajectories) > self.max_trajectories:
             trajectories = trajectories[:self.max_trajectories]
         
         # Convert to dataframe
@@ -313,17 +247,14 @@ class CSVTrajectoryLogger(TrajectoryLogger):
         self.logged_count += len(trajectories)
 
 
-
 def create_trajectory_logger_from_config(
     logging_cfg: DictConfig,
-    tokenizer
 ) -> Optional[TrajectoryLogger]:
     """
     Create trajectory logger from configuration following repo factory pattern.
     
     Args:
         logging_cfg: Trajectory logging configuration
-        tokenizer: Tokenizer for text processing
         
     Returns:
         TrajectoryLogger instance or None if disabled
@@ -335,17 +266,14 @@ def create_trajectory_logger_from_config(
     
     if logger_type == 'wandb':
         return WandbTableTrajectoryLogger(
-            tokenizer=tokenizer,
-            max_trajectories=logging_cfg.get('max_trajectories', 10),
-            max_text_length=logging_cfg.get('max_text_length', 2000),
-            log_full_history=logging_cfg.get('log_full_history', False)
+            max_trajectories=logging_cfg.get('max_trajectories', -1),
+            log_full_history=logging_cfg.get('log_full_history', True)
         )
     elif logger_type == 'csv':
         output_dir = logging_cfg.get('output_dir', './trajectory_logs')
         return CSVTrajectoryLogger(
             output_dir=output_dir,
-            tokenizer=tokenizer,
-            max_trajectories=logging_cfg.get('max_trajectories', None)
+            max_trajectories=logging_cfg.get('max_trajectories', -1)
         )
     else:
         raise ValueError(f"Unknown trajectory logger type: {logger_type}")
