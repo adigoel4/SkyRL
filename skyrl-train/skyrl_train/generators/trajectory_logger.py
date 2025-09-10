@@ -8,37 +8,9 @@ including model outputs and environment observations/feedback.
 import os
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Union
-from dataclasses import dataclass
 import pandas as pd
 from omegaconf import DictConfig
 from skyrl_train.inference_engines.base import ConversationType
-
-
-@dataclass
-class Trajectory:
-    """
-    Complete trajectory data including prompts, responses, and rewards.
-    
-    Attributes:
-        prompt: Original prompt (can be ConversationType or string)
-        chat_history: Complete conversation history
-        response: Final generated response text
-        reward: Reward signal from environment
-        stop_reason: Reason for trajectory termination
-        env_class: Environment class used
-        env_extras: Additional environment metadata
-        loss_mask: Loss mask for training (optional)
-        metadata: Additional metadata (optional)
-    """
-    prompt: Union[ConversationType, str]
-    chat_history: ConversationType
-    response: str
-    reward: float
-    stop_reason: str
-    env_class: str
-    env_extras: Dict[str, Any]
-    loss_mask: Optional[List[int]] = None
-    metadata: Optional[Dict[str, Any]] = None
 
 
 class TrajectoryLogger(ABC):
@@ -46,7 +18,12 @@ class TrajectoryLogger(ABC):
     Abstract base class for trajectory logging.
     
     Subclasses should implement the log method to handle trajectory
-    data in their specific format (e.g., wandb tables, CSV files, etc.)
+    data in their specific format (e.g., wandb tables, CSV files, etc.).
+    
+    TODO: Allow users to bring a custom trajectory logger. They should be able to
+    define their own class (outside of the skyrl-train package) and add it to
+    a registry (see AdvantageEstimatorRegistry for an example) so that it can
+    be referenced by name in the config.
     """
     
     def __init__(self, max_trajectories: int = -1):
@@ -62,7 +39,9 @@ class TrajectoryLogger(ABC):
     @abstractmethod
     def log(
         self, 
-        trajectories: List[Trajectory], 
+        prompts: List[str],
+        responses: List[str], 
+        rewards: List[float],
         step: int,
         prefix: str = "train"
     ) -> None:
@@ -70,7 +49,9 @@ class TrajectoryLogger(ABC):
         Log a batch of trajectories.
         
         Args:
-            trajectories: List of Trajectory objects to log
+            prompts: List of prompts
+            responses: List of responses
+            rewards: List of rewards
             step: Current training step
             prefix: Prefix for logging (e.g., "train", "eval")
         """
@@ -93,32 +74,23 @@ class TrajectoryLogger(ABC):
             formatted.append(f"[{role}]: {content}")
         return "\n".join(formatted)
     
-    def to_dataframe(self, trajectories: List[Trajectory]) -> pd.DataFrame:
+    def to_dataframe(self, prompts: List[str], responses: List[str], rewards: List[float]) -> pd.DataFrame:
         """
         Convert trajectories to a pandas DataFrame for analysis.
         
         Args:
-            trajectories: List of Trajectory objects
+            prompts: List of prompts
+            responses: List of responses 
+            rewards: List of rewards
             
         Returns:
             DataFrame with trajectory data
         """
-        data = []
-        for traj in trajectories:
-            # Format prompt based on type
-            if isinstance(traj.prompt, list):
-                prompt_str = self._format_conversation(traj.prompt)
-            else:
-                prompt_str = str(traj.prompt)
-            
-            data.append({
-                "prompt": prompt_str,
-                "response": traj.response,
-                "reward": traj.reward,
-                "stop_reason": traj.stop_reason,
-                "env_class": traj.env_class,
-                "chat_turns": len(traj.chat_history),
-            })
+        data = {
+            "prompt": prompts,
+            "response": responses,
+            "reward": rewards
+        }
         
         return pd.DataFrame(data)
 
@@ -130,25 +102,24 @@ class WandbTableTrajectoryLogger(TrajectoryLogger):
     
     def __init__(
         self, 
-        max_trajectories: int = -1,
-        log_full_history: bool = True
+        max_trajectories: int = -1
     ):
         """
         Initialize the WandB table trajectory logger.
         
         Args:
             max_trajectories: Maximum number of trajectories to log per batch (-1 for unlimited)
-            log_full_history: Whether to log full chat history or just prompt/response
         """
         super().__init__(max_trajectories)
-        self.log_full_history = log_full_history
         
         import wandb
         self.wandb = wandb
     
     def log(
         self, 
-        trajectories: List[Trajectory], 
+        prompts: List[str],
+        responses: List[str], 
+        rewards: List[float],
         step: int,
         prefix: str = "train"
     ) -> None:
@@ -156,44 +127,32 @@ class WandbTableTrajectoryLogger(TrajectoryLogger):
         Log trajectories to wandb as a table.
         
         Args:
-            trajectories: List of Trajectory objects to log
+            prompts: List of prompts
+            responses: List of responses
+            rewards: List of rewards
             step: Current training step
             prefix: Prefix for logging (e.g., "train", "eval")
         """
         # Limit number of trajectories if specified
-        if self.max_trajectories > 0 and len(trajectories) > self.max_trajectories:
-            trajectories = trajectories[:self.max_trajectories]
+        if self.max_trajectories > 0 and len(prompts) > self.max_trajectories:
+            prompts = prompts[:self.max_trajectories]
+            responses = responses[:self.max_trajectories]
+            rewards = rewards[:self.max_trajectories]
         
-        # Define columns based on logging configuration
-        if self.log_full_history:
-            columns = ["step", "env_class", "full_conversation", "reward", "stop_reason"]
-        else:
-            columns = ["step", "env_class", "prompt", "response", "reward", "stop_reason"]
+        # Define columns
+        columns = ["step", "prompt", "response", "reward"]
         
         # Create table
         table = self.wandb.Table(columns=columns)
         
         # Add rows for each trajectory
-        for traj in trajectories:
-            # Format prompt
-            if isinstance(traj.prompt, list):
-                prompt_str = self._format_conversation(traj.prompt)
-            else:
-                prompt_str = str(traj.prompt)
-            
-            if self.log_full_history:
-                # Format full conversation
-                full_conv = self._format_conversation(traj.chat_history)
-                row_data = [step, traj.env_class, full_conv, traj.reward, traj.stop_reason]
-            else:
-                row_data = [step, traj.env_class, prompt_str, traj.response, traj.reward, 
-                           traj.stop_reason]
-            
+        for prompt, response, reward in zip(prompts, responses, rewards):
+            row_data = [step, prompt, response, reward]
             table.add_data(*row_data)
         
         # Log to wandb
         self.wandb.log({f"{prefix}/trajectories": table}, step=step)
-        self.logged_count += len(trajectories)
+        self.logged_count += len(prompts)
 
 
 class CSVTrajectoryLogger(TrajectoryLogger):
@@ -219,7 +178,9 @@ class CSVTrajectoryLogger(TrajectoryLogger):
     
     def log(
         self,
-        trajectories: List[Trajectory],
+        prompts: List[str],
+        responses: List[str], 
+        rewards: List[float],
         step: int,
         prefix: str = "train"
     ) -> None:
@@ -227,16 +188,20 @@ class CSVTrajectoryLogger(TrajectoryLogger):
         Save trajectories to a CSV file.
         
         Args:
-            trajectories: List of Trajectory objects to log
+            prompts: List of prompts
+            responses: List of responses
+            rewards: List of rewards
             step: Current training step
             prefix: Prefix for logging (e.g., "train", "eval")
         """
         # Limit number of trajectories if specified
-        if self.max_trajectories > 0 and len(trajectories) > self.max_trajectories:
-            trajectories = trajectories[:self.max_trajectories]
+        if self.max_trajectories > 0 and len(prompts) > self.max_trajectories:
+            prompts = prompts[:self.max_trajectories]
+            responses = responses[:self.max_trajectories]
+            rewards = rewards[:self.max_trajectories]
         
         # Convert to dataframe
-        df = self.to_dataframe(trajectories)
+        df = self.to_dataframe(prompts, responses, rewards)
         df["step"] = step
         df["prefix"] = prefix
         
@@ -244,33 +209,37 @@ class CSVTrajectoryLogger(TrajectoryLogger):
         filename = os.path.join(self.output_dir, f"{prefix}_trajectories_step_{step}.csv")
         df.to_csv(filename, index=False)
         
-        self.logged_count += len(trajectories)
+        self.logged_count += len(prompts)
 
 
 def create_trajectory_logger_from_config(
     logging_cfg: DictConfig,
+    export_path: Optional[str] = None
 ) -> Optional[TrajectoryLogger]:
     """
     Create trajectory logger from configuration following repo factory pattern.
     
     Args:
         logging_cfg: Trajectory logging configuration
+        export_path: Base export path from config
         
     Returns:
         TrajectoryLogger instance or None if disabled
     """
-    if not logging_cfg.get('enabled', False):
-        return None
+    assert logging_cfg.get('enabled', False), "Trajectory logging must be enabled to create logger"
         
     logger_type = logging_cfg.get('type', 'wandb')
     
     if logger_type == 'wandb':
         return WandbTableTrajectoryLogger(
-            max_trajectories=logging_cfg.get('max_trajectories', -1),
-            log_full_history=logging_cfg.get('log_full_history', True)
+            max_trajectories=logging_cfg.get('max_trajectories', -1)
         )
     elif logger_type == 'csv':
-        output_dir = logging_cfg.get('output_dir', './trajectory_logs')
+        # Use export_path + '/trajectory_logs' as default if not specified
+        if export_path and 'output_dir' not in logging_cfg:
+            output_dir = os.path.join(export_path, 'trajectory_logs')
+        else:
+            output_dir = logging_cfg.get('output_dir', './trajectory_logs')
         return CSVTrajectoryLogger(
             output_dir=output_dir,
             max_trajectories=logging_cfg.get('max_trajectories', -1)
