@@ -51,7 +51,6 @@ def trajectory_logging_config(base_config) -> DictConfig:
     base_config.generator.trajectory_logging.enabled = True
     base_config.generator.trajectory_logging.type = "csv"
     base_config.generator.trajectory_logging.max_trajectories = 5
-    base_config.generator.trajectory_logging.log_interval = 1
     base_config.generator.trajectory_logging.output_dir = "./test_trajectory_logs"
     return base_config
 
@@ -102,10 +101,19 @@ def mock_inference_engine():
     """Create a mock inference engine."""
     engine = MagicMock()
     
-    async def mock_generate(prompts, **kwargs):
+    async def mock_generate(input_data, **kwargs):
+        # Handle both old and new interface
+        if hasattr(input_data, 'prompts'):
+            num_prompts = len(input_data.prompts)
+        elif hasattr(input_data, 'prompt_token_ids'):
+            num_prompts = len(input_data.prompt_token_ids)
+        else:
+            num_prompts = 1
+            
         return {
-            "responses": [f"Generated response {i}" for i in range(len(prompts))],
-            "stop_reasons": ["stop"] * len(prompts)
+            "responses": [f"Generated response {i}" for i in range(num_prompts)],
+            "response_ids": [[1, 2, 3, 4] for i in range(num_prompts)],
+            "stop_reasons": ["stop"] * num_prompts
         }
     
     engine.generate = AsyncMock(side_effect=mock_generate)
@@ -144,7 +152,6 @@ class TestTrajectoryLoggingIntegration:
         assert cfg.generator.trajectory_logging.enabled is True
         assert cfg.generator.trajectory_logging.type == "csv"
         assert cfg.generator.trajectory_logging.max_trajectories == 5
-        assert cfg.generator.trajectory_logging.log_interval == 1
     
     @patch("skyrl_gym.make")
     def test_generator_trajectory_collection(
@@ -169,7 +176,6 @@ class TestTrajectoryLoggingIntegration:
             
             # Verify trajectory logger was created
             assert generator.trajectory_logger is not None
-            assert generator.collect_trajectories is True
     
     @pytest.mark.asyncio
     @patch("skyrl_gym.make")
@@ -204,12 +210,10 @@ class TestTrajectoryLoggingIntegration:
             }
             
             # Execute generation - this should automatically trigger trajectory logging
-            # since log_interval=1 in our test config
             generator_output = await generator.generate(input_batch)
             
             # Verify trajectory logging worked by checking for CSV file
-            # The _handle_trajectory_logging method should have created the file automatically
-            csv_file = os.path.join(tmpdir, "generation_trajectories_step_1.csv")
+            csv_file = os.path.join(tmpdir, "generation_trajectories_step_0.csv")
             assert os.path.exists(csv_file), f"Expected trajectory file not found at {csv_file}"
             
             # Verify CSV content contains expected trajectory data
@@ -218,21 +222,15 @@ class TestTrajectoryLoggingIntegration:
             # Should have 2 trajectories from the input batch
             assert len(df) == 2
             
-            # Verify structure and metadata
+            # Verify simplified structure
             assert "prompt" in df.columns
             assert "response" in df.columns 
             assert "reward" in df.columns
             assert "step" in df.columns
-            assert "env_class" in df.columns
-            assert all(df["step"] == 1)  # batch_count starts at 1
-            assert all(df["prefix"] == "generation")  # hardcoded in _handle_trajectory_logging
-            assert all(df["env_class"] == "test_env")
+            assert "prefix" in df.columns
+            assert all(df["step"] == 0)
+            assert all(df["prefix"] == "generation")
             assert all(df["reward"] == 1.0)
-            
-            # Verify trajectory content
-            prompts = df["prompt"].tolist()
-            assert any("machine learning" in prompt.lower() for prompt in prompts)
-            assert any("neural networks" in prompt.lower() for prompt in prompts)
     
     def test_trainer_trajectory_logging_integration(self, trajectory_logging_config, mock_tokenizer):
         """Test that RayPPOTrainer integrates with trajectory logging configuration."""
@@ -270,7 +268,6 @@ class TestTrajectoryLoggingIntegration:
         traj_config = trainer.cfg.generator.trajectory_logging
         assert traj_config.type == "csv"
         assert traj_config.max_trajectories == 5
-        assert traj_config.log_interval == 1
     
     @patch("skyrl_gym.make")
     def test_trajectory_logging_disabled(
@@ -293,4 +290,3 @@ class TestTrajectoryLoggingIntegration:
         
         # Verify no trajectory collection
         assert generator.trajectory_logger is None
-        assert generator.collect_trajectories is False

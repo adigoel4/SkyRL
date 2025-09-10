@@ -234,7 +234,7 @@ generator:
     enabled: false  # Set to true to enable trajectory logging
     type: "wandb"  # Type of logger to use ("wandb" or "csv")
     max_trajectories: -1  # Maximum number of trajectories to log per batch (-1 for unlimited)
-    # output_dir defaults to ${trainer.export_path}/trajectory_logs if not specified
+    output_dir: "${trainer.export_path}/trajectory_logs"  # Output directory for CSV logger
 
   # NOTE (sumanthrh): This flag sets the reward to 0 if the `stop_reason` is not `stop`.
   # This is useful in cases where the LLM generation was truncated or aborted.

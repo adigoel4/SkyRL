@@ -26,7 +26,7 @@ from skyrl_train.generators.utils import (
     apply_overlong_filtering,
     get_rollout_metrics,
 )
-from skyrl_train.generators.trajectory_logger import TrajectoryLogger, Trajectory, create_trajectory_logger_from_config
+from skyrl_train.generators.trajectory_logger import create_trajectory_logger_from_config
 
 
 @dataclass
@@ -39,7 +39,6 @@ class AgentLoopOutput:
     loss_mask: List[int]
     prompt_ids: List[int]
     rollout_logprobs: Optional[List[float]]
-    trajectory: Optional[Trajectory]
 
 
 
@@ -51,7 +50,6 @@ class SkyRLGymGenerator(GeneratorInterface):
         inference_engine_client: InferenceEngineClient,
         tokenizer,
         model_name: str,
-        trajectory_logger: Optional[TrajectoryLogger] = None,
     ):
         """
         Args:
@@ -78,26 +76,13 @@ class SkyRLGymGenerator(GeneratorInterface):
         else:
             self.env_executor = None
         
-        # Initialize trajectory logging components
-        self.trajectory_batch = []
-        self.batch_count = 0  # Internal counter for logging intervals
-        
-        # Use injected logger or create from config
-        if trajectory_logger:
-            self.trajectory_logger = trajectory_logger
-            self.collect_trajectories = True
-            # Get log interval from config if available
-            self.log_interval = generator_cfg.trajectory_logging.get('log_interval', 100) if hasattr(generator_cfg, 'trajectory_logging') else 100
-        elif hasattr(generator_cfg, 'trajectory_logging'):
+        # Initialize trajectory logging if enabled
+        if generator_cfg.trajectory_logging.enabled:
             self.trajectory_logger = create_trajectory_logger_from_config(
                 generator_cfg.trajectory_logging
             )
-            self.collect_trajectories = self.trajectory_logger is not None
-            self.log_interval = generator_cfg.trajectory_logging.get('log_interval', 100)
         else:
             self.trajectory_logger = None
-            self.collect_trajectories = False
-            self.log_interval = None
     
 
         if getattr(self.generator_cfg.sampling_params, "logprobs", None) is not None and not self.generator_cfg.batched:
@@ -166,7 +151,6 @@ class SkyRLGymGenerator(GeneratorInterface):
             loss_mask: List[int]
             prompt_token_ids: List[int]
             rollout_logprobs: Optional[List[float]]
-            trajectory: Optional[Trajectory]
         """
         retokenize_chat_history = self.use_conversation_multi_turn and self.custom_chat_template
 
@@ -312,23 +296,7 @@ class SkyRLGymGenerator(GeneratorInterface):
         response_ids = response_ids[:max_response_tokens]
         loss_mask = loss_mask[:max_response_tokens]
         
-        # Create trajectory object if logging is enabled
-        trajectory = None
-        if self.trajectory_logger and self.collect_trajectories:
-            # Decode response for logging
-            response_text = self.tokenizer.decode(response_ids, skip_special_tokens=True)
-            
-            trajectory = Trajectory(
-                prompt=prompt,
-                chat_history=chat_history,
-                response=response_text,
-                reward=reward,
-                stop_reason=stop_reason,
-                env_class=env_class,
-                env_extras=env_extras,
-                loss_mask=loss_mask,
-                metadata={'trajectory_id': trajectory_id}
-            )
+        # Trajectory logging is handled in _handle_trajectory_logging method
 
         # Build reward output
         if retokenize_chat_history:
@@ -364,8 +332,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             stop_reason=stop_reason,
             loss_mask=loss_mask,
             prompt_ids=prompt_ids,
-            rollout_logprobs=rollout_logprobs,
-            trajectory=trajectory
+            rollout_logprobs=rollout_logprobs
 
         )
 
@@ -734,37 +701,37 @@ class SkyRLGymGenerator(GeneratorInterface):
 
     def _handle_trajectory_logging(self, all_outputs) -> None:
         """
-        Collect trajectories and flush them based on configuration.
-        
-        This method handles all trajectory logging internally without
-        requiring external control from the trainer.
+        Log trajectories by extracting prompts, responses, and rewards.
         
         Args:
             all_outputs: List of outputs from agent_loop calls
         """
-        if not (self.trajectory_logger and self.collect_trajectories):
+        if not self.trajectory_logger:
             return
             
-        # Collect new trajectories
-        trajectories = [output.trajectory for output in all_outputs if output.trajectory is not None]
-        if trajectories:
-            self.trajectory_batch.extend(trajectories)
+        # Extract prompts, responses, and rewards from outputs
+        prompts = []
+        responses = []
+        rewards = []
         
-        # Increment batch counter
-        self.batch_count += 1
+        for output in all_outputs:
+            # Detokenize prompt_ids to get prompt text
+            prompt_text = self.tokenizer.decode(output.prompt_ids, skip_special_tokens=True)
+            prompts.append(prompt_text)
+            
+            # Detokenize response_ids to get response text  
+            response_text = self.tokenizer.decode(output.response_ids, skip_special_tokens=True)
+            responses.append(response_text)
+            
+            # Extract reward (handle both single float and list of floats)
+            if isinstance(output.reward, list):
+                # For token-level rewards, sum them up
+                total_reward = sum(output.reward)
+            else:
+                total_reward = output.reward
+            rewards.append(total_reward)
         
-        # Check if we should flush based on log interval
-        should_flush = False
-        if self.log_interval == 1:
-            # Log every batch
-            should_flush = True
-        elif self.log_interval and self.batch_count % self.log_interval == 0:
-            # Log every N batches
-            should_flush = True
-        
-        if should_flush and self.trajectory_batch:
-            # Note: Using batch_count as step since we don't differentiate train/eval
-            # Future work will pass is_eval flag to handle this properly
-            self.trajectory_logger.log(self.trajectory_batch, self.batch_count, "generation")
-            self.trajectory_batch.clear()
+        if prompts:
+            # Log every step (no batching or intervals)
+            self.trajectory_logger.log(prompts, responses, rewards, step=0, prefix="generation")
 
