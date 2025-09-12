@@ -41,7 +41,6 @@ class AgentLoopOutput:
     rollout_logprobs: Optional[List[float]]
 
 
-
 class SkyRLGymGenerator(GeneratorInterface):
     def __init__(
         self,
@@ -295,22 +294,6 @@ class SkyRLGymGenerator(GeneratorInterface):
             stop_reason = "length"
         response_ids = response_ids[:max_response_tokens]
         loss_mask = loss_mask[:max_response_tokens]
-        
-        # Trajectory logging is handled in _handle_trajectory_logging method
-
-        # Build reward output
-        if retokenize_chat_history:
-            reward_out = per_step_rewards[-1][0]
-        else:
-            # Build token-level rewards placed at assistant turn boundaries
-            token_level_rewards: List[float] = [0.0] * len(response_ids)
-            for step_reward, idx in per_step_rewards:
-                if step_reward is None:
-                    continue
-                if idx >= len(response_ids):
-                    break
-                token_level_rewards[idx] += step_reward
-            reward_out = token_level_rewards
 
         # Build reward output
         if retokenize_chat_history:
@@ -333,7 +316,6 @@ class SkyRLGymGenerator(GeneratorInterface):
             loss_mask=loss_mask,
             prompt_ids=prompt_ids,
             rollout_logprobs=rollout_logprobs
-
         )
 
     async def generate_batched(
@@ -465,7 +447,6 @@ class SkyRLGymGenerator(GeneratorInterface):
         loss_masks = [output.loss_mask for output in all_outputs]
         prompt_token_ids = [output.prompt_ids for output in all_outputs]
 
-
         if sampling_params is not None:
             # sampling params will be a dict in the format of the inference engine backend
             # TODO: this might have to change when we support logprobs for sglang
@@ -478,8 +459,16 @@ class SkyRLGymGenerator(GeneratorInterface):
         else:
             rollout_logprobs = None
         
-        # Collect and potentially flush trajectories if logging is enabled
-        self._handle_trajectory_logging(all_outputs)
+        # Log trajectories if logging is enabled
+        if self.trajectory_logger:
+            # Detokenize prompts and responses for logging
+            log_prompts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in prompt_token_ids]
+            log_responses = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in responses]
+            
+            # Handle both single float and list of floats for rewards
+            log_rewards = [sum(r) if isinstance(r, list) else r for r in rewards]
+            
+            self.trajectory_logger.log(log_prompts, log_responses, log_rewards, step=0, prefix="generation")
 
         rollout_metrics = get_rollout_metrics(responses, rewards)
 
@@ -699,39 +688,4 @@ class SkyRLGymGenerator(GeneratorInterface):
 
         return loss_mask, input_ids, logprobs, response_end_idx
 
-    def _handle_trajectory_logging(self, all_outputs) -> None:
-        """
-        Log trajectories by extracting prompts, responses, and rewards.
-        
-        Args:
-            all_outputs: List of outputs from agent_loop calls
-        """
-        if not self.trajectory_logger:
-            return
-            
-        # Extract prompts, responses, and rewards from outputs
-        prompts = []
-        responses = []
-        rewards = []
-        
-        for output in all_outputs:
-            # Detokenize prompt_ids to get prompt text
-            prompt_text = self.tokenizer.decode(output.prompt_ids, skip_special_tokens=True)
-            prompts.append(prompt_text)
-            
-            # Detokenize response_ids to get response text  
-            response_text = self.tokenizer.decode(output.response_ids, skip_special_tokens=True)
-            responses.append(response_text)
-            
-            # Extract reward (handle both single float and list of floats)
-            if isinstance(output.reward, list):
-                # For token-level rewards, sum them up
-                total_reward = sum(output.reward)
-            else:
-                total_reward = output.reward
-            rewards.append(total_reward)
-        
-        if prompts:
-            # Log every step (no batching or intervals)
-            self.trajectory_logger.log(prompts, responses, rewards, step=0, prefix="generation")
 
