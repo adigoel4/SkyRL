@@ -213,7 +213,7 @@ class TestTrajectoryLoggingIntegration:
             generator_output = await generator.generate(input_batch)
             
             # Verify trajectory logging worked by checking for CSV file
-            csv_file = os.path.join(tmpdir, "generation_trajectories_step_0.csv")
+            csv_file = os.path.join(tmpdir, "trajectories.csv")
             assert os.path.exists(csv_file), f"Expected trajectory file not found at {csv_file}"
             
             # Verify CSV content contains expected trajectory data
@@ -227,9 +227,10 @@ class TestTrajectoryLoggingIntegration:
             assert "response" in df.columns 
             assert "reward" in df.columns
             assert "step" in df.columns
-            assert "prefix" in df.columns
-            assert all(df["step"] == 0)
-            assert all(df["prefix"] == "generation")
+            
+            # Verify step values are indices (0, 1 for 2 trajectories)
+            expected_steps = list(range(len(df)))
+            assert list(df["step"]) == expected_steps, f"Expected steps {expected_steps}, got {list(df['step'])}"
             assert all(df["reward"] == 1.0)
     
     def test_trainer_trajectory_logging_integration(self, trajectory_logging_config, mock_tokenizer):

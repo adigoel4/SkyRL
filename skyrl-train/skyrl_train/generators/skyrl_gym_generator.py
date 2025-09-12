@@ -467,7 +467,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             # Handle both single float and list of floats for rewards
             log_rewards = [sum(r) if isinstance(r, list) else r for r in rewards]
             
-            self.trajectory_logger.log(log_prompts, log_responses, log_rewards, step=0, prefix="generation")
+            self.trajectory_logger.log(log_prompts, log_responses, log_rewards)
 
         rollout_metrics = get_rollout_metrics(responses, rewards)
 

@@ -37,7 +37,7 @@ def sample_data():
 def concrete_logger():
     """Create a concrete implementation of TrajectoryLogger for testing."""
     class ConcreteLogger(TrajectoryLogger):
-        def log(self, prompts, responses, rewards, step, prefix="train"):
+        def log(self, prompts, responses, rewards):
             pass
     return ConcreteLogger()
 
@@ -67,9 +67,7 @@ class TestWandbTableTrajectoryLogger:
             logger.log(
                 sample_data["prompts"],
                 sample_data["responses"], 
-                sample_data["rewards"],
-                step=100,
-                prefix="test"
+                sample_data["rewards"]
             )
             
             # Verify table creation
@@ -80,10 +78,10 @@ class TestWandbTableTrajectoryLogger:
             # Verify trajectory limiting (max_trajectories=2)
             assert mock_table.add_data.call_count == 2
             
-            # Verify wandb.log call
+            # Verify wandb.log call with fixed prefix
             mock_wandb_module.log.assert_called_once()
             log_args = mock_wandb_module.log.call_args[0][0]
-            assert "test/trajectories" in log_args
+            assert "trajectories" in log_args
     
     def test_unlimited_trajectories(self, sample_data):
         """Test logging with unlimited trajectories."""
@@ -97,8 +95,7 @@ class TestWandbTableTrajectoryLogger:
             logger.log(
                 sample_data["prompts"],
                 sample_data["responses"],
-                sample_data["rewards"],
-                step=100
+                sample_data["rewards"]
             )
             
             # Should log all 3 trajectories
@@ -125,20 +122,19 @@ class TestCSVTrajectoryLogger:
             logger.log(
                 sample_data["prompts"],
                 sample_data["responses"],
-                sample_data["rewards"],
-                step=100,
-                prefix="train"
+                sample_data["rewards"]
             )
             
             # Verify CSV file creation
-            csv_file = os.path.join(tmpdir, "train_trajectories_step_100.csv")
+            csv_file = os.path.join(tmpdir, "trajectories.csv")
             assert os.path.exists(csv_file)
             
             # Verify CSV content
             df = pd.read_csv(csv_file)
             assert len(df) == 2  # Limited by max_trajectories
-            assert df["step"].iloc[0] == 100
-            assert df["prefix"].iloc[0] == "train"
+            
+            # Verify step values are indices (0, 1)
+            assert list(df["step"]) == [0, 1]
             assert "What is 2+2?" in df["prompt"].values
             assert "The answer is 4." in df["response"].values
             assert 1.0 in df["reward"].values

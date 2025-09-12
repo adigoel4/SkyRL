@@ -29,9 +29,7 @@ class TrajectoryLogger(ABC):
         self, 
         prompts: List[str],
         responses: List[str], 
-        rewards: List[float],
-        step: int,
-        prefix: str = "train"
+        rewards: List[float]
     ) -> None:
         pass
 
@@ -47,20 +45,17 @@ class WandbTableTrajectoryLogger(TrajectoryLogger):
         self, 
         prompts: List[str],
         responses: List[str], 
-        rewards: List[float],
-        step: int,
-        prefix: str = "train"
+        rewards: List[float]
     ) -> None:
         if self.max_trajectories > 0:
             prompts = prompts[:self.max_trajectories]
             responses = responses[:self.max_trajectories]
             rewards = rewards[:self.max_trajectories]
         
-        table = self.wandb.Table(columns=["step", "prompt", "response", "reward"])
-        for prompt, response, reward in zip(prompts, responses, rewards):
-            table.add_data(step, prompt, response, reward)
+        data = [[i, prompt, response, reward] for i, (prompt, response, reward) in enumerate(zip(prompts, responses, rewards))]
+        table = self.wandb.Table(columns=["step", "prompt", "response", "reward"], data=data)
         
-        self.wandb.log({f"{prefix}/trajectories": table}, step=step)
+        self.wandb.log({"trajectories": table})
 
 
 class CSVTrajectoryLogger(TrajectoryLogger):
@@ -74,9 +69,7 @@ class CSVTrajectoryLogger(TrajectoryLogger):
         self,
         prompts: List[str],
         responses: List[str], 
-        rewards: List[float],
-        step: int,
-        prefix: str = "train"
+        rewards: List[float]
     ) -> None:
         if self.max_trajectories > 0:
             prompts = prompts[:self.max_trajectories]
@@ -84,14 +77,13 @@ class CSVTrajectoryLogger(TrajectoryLogger):
             rewards = rewards[:self.max_trajectories]
         
         df = pd.DataFrame({
-            "step": step,
-            "prefix": prefix,
+            "step": list(range(len(prompts))),
             "prompt": prompts,
             "response": responses,
             "reward": rewards
         })
         
-        filename = os.path.join(self.output_dir, f"{prefix}_trajectories_step_{step}.csv")
+        filename = os.path.join(self.output_dir, "trajectories.csv")
         df.to_csv(filename, index=False)
 
 
