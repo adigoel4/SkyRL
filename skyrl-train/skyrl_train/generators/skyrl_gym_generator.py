@@ -83,7 +83,6 @@ class SkyRLGymGenerator(GeneratorInterface):
         else:
             self.trajectory_logger = None
     
-
         if getattr(self.generator_cfg.sampling_params, "logprobs", None) is not None and not self.generator_cfg.batched:
             raise ValueError("`sampling_params.logprobs` should be `None` if `batched` is `False`")
 
@@ -315,7 +314,7 @@ class SkyRLGymGenerator(GeneratorInterface):
             stop_reason=stop_reason,
             loss_mask=loss_mask,
             prompt_ids=prompt_ids,
-            rollout_logprobs=rollout_logprobs
+            rollout_logprobs=rollout_logprobs,
         )
 
     async def generate_batched(
