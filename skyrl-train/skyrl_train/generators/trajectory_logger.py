@@ -1,7 +1,20 @@
 """
-Trajectory logging utilities for debugging and analysis during training.
+This module provides a framework for logging prompts, responses, and rewards during
+RL training. Built-in loggers support Weights & Biases tables and CSV files.
 
-This module provides a simple framework for logging prompts, responses, and rewards.
+Example:
+    # In your config:
+    trajectory_logging:
+      enabled: true
+      type: "wandb"  # or "csv"
+      max_trajectories: 100
+      
+    # Custom logger:
+    @register_trajectory_logger("custom")
+    class MyLogger(TrajectoryLogger):
+        def log(self, prompts, responses, rewards, step, prefix="train"):
+            # Your custom logging logic here
+            pass
 """
 
 import os
@@ -15,10 +28,8 @@ class TrajectoryLogger(ABC):
     """
     Abstract base class for trajectory logging.
     
-    TODO: Allow users to bring a custom trajectory logger. They should be able to
-    define their own class (outside of the skyrl-train package) and add it to
-    a registry (see AdvantageEstimatorRegistry for an example) so that it can
-    be referenced by name in the config.
+    Custom loggers should inherit from this class and implement the log() method.
+    The logger will be called once per training batch with prompts, responses, and rewards.
     """
     
     def __init__(self, max_trajectories: int = -1):
@@ -95,15 +106,59 @@ class CSVTrajectoryLogger(TrajectoryLogger):
         df.to_csv(filename, index=False)
 
 
+class TrajectoryLoggerRegistry:
+    """
+    Allows users to register custom trajectory loggers without modifying skyrl_train.
+    Built-in loggers ("wandb", "csv") are pre-registered.
+    """
+
+    _loggers = {}
+
+    @classmethod
+    def register(cls, name: str, logger_class):
+        """Register a trajectory logger class."""
+        if name in cls._loggers:
+            raise ValueError(f"Trajectory logger '{name}' already registered")
+        cls._loggers[name] = logger_class
+
+    @classmethod
+    def get(cls, name: str):
+        """Get a registered trajectory logger class by name."""
+        if name not in cls._loggers:
+            available = list(cls._loggers.keys())
+            raise ValueError(f"Unknown trajectory logger '{name}'. Available: {available}")
+        return cls._loggers[name]
+
+    @classmethod
+    def list_available(cls):
+        """List all registered trajectory logger names."""
+        return list(cls._loggers.keys())
+
+
+def register_trajectory_logger(name: str):
+    """Decorator to register a trajectory logger class."""
+
+    def decorator(cls):
+        TrajectoryLoggerRegistry.register(name, cls)
+        return cls
+
+    return decorator
+
+
+# Register built-in trajectory loggers
+TrajectoryLoggerRegistry.register("wandb", WandbTableTrajectoryLogger)
+TrajectoryLoggerRegistry.register("csv", CSVTrajectoryLogger)
+
+
 def create_trajectory_logger_from_config(logging_cfg: DictConfig) -> TrajectoryLogger:
     assert logging_cfg.enabled
     
-    if logging_cfg.type == 'wandb':
-        return WandbTableTrajectoryLogger(max_trajectories=logging_cfg.max_trajectories)
-    elif logging_cfg.type == 'csv':
-        return CSVTrajectoryLogger(
-            output_dir=logging_cfg.output_dir,
-            max_trajectories=logging_cfg.max_trajectories
-        )
-    else:
-        raise ValueError(f"Unknown trajectory logger type: {logging_cfg.type}")
+    # Get the logger class from the registry
+    logger_class = TrajectoryLoggerRegistry.get(logging_cfg.type)
+    
+    # Prepare kwargs for the logger constructor
+    # Pass all config parameters except 'enabled' and 'type'
+    kwargs = {k: v for k, v in logging_cfg.items() if k not in ['enabled', 'type']}
+    
+    # Create and return the logger instance
+    return logger_class(**kwargs)
